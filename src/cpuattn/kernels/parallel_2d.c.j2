@@ -1,0 +1,299 @@
+#define _GNU_SOURCE
+#include <math.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <omp.h>
+
+#define TILE_Q 1
+#define TILE_K {{ code.tile.k }}
+#define TILE_D {{ code.tile.d }}
+#define TILE_DV {{ code.tile.dv }}
+#define QK_VECTORS {{ code.microkernel.qk_vectors }}
+#define CPUATTN_PACKED_K {{ 1 if code.packing.value == "k_transposed" else 0 }}
+#define STATE_COUNT {{ row_norm.states | length }}
+
+#include "common/threading.h"
+#include "common/executor.h"
+#include "common/packing.h"
+#include "simd/parallel.h"
+#include "simd/expr.h"
+
+int cpuattn_run(
+    const float *restrict q,
+    const float *restrict k,
+    const float *restrict v,
+    float *restrict output{% for argument in arguments %},
+    const float *restrict arg_{{ argument.name }}{% endfor %},
+    int64_t B, int64_t HQ, int64_t HKV, int64_t SQ,
+    int64_t SKV, int64_t D, int64_t DV,
+    void *restrict raw_workspace, size_t workspace_bytes,
+    const int *cpu_ids, int workers,
+    const int *worker_groups, int group_count,
+    const int *packed_owner_groups, int packed_owner_count) {
+    if (!q || !k || !v || !output || !raw_workspace || !cpu_ids
+        || !worker_groups || workers < 4 || group_count <= 0) return -1;
+{% if code.packing.value == "k_transposed" %}
+    if (!packed_owner_groups || packed_owner_count <= 0) return -1;
+{% endif %}
+
+    int key_parts = 0;
+    for (int divisor = 2; divisor <= workers / 2; ++divisor) {
+        if (workers % divisor == 0) {
+            key_parts = divisor;
+            break;
+        }
+    }
+    if (key_parts == 0) return -3;
+    int query_parts = workers / key_parts;
+    int64_t rows = B * HQ * SQ;
+    size_t part_stride = (size_t)DV + STATE_COUNT;
+    size_t page_size = cpuattn_page_size();
+{% if code.packing.value == "k_transposed" %}
+    int64_t packed_skv = ((SKV + TILE_K - 1) / TILE_K) * TILE_K;
+    size_t packed_count = (size_t)B * HKV * D * packed_skv;
+    size_t packed_copy_bytes = cpuattn_align_size(packed_count * sizeof(float), page_size);
+    size_t packed_bytes = packed_copy_bytes * (size_t)packed_owner_count;
+{% else %}
+    size_t packed_bytes = 0;
+{% endif %}
+    size_t worker_stride = cpuattn_align_size(
+        (size_t)rows * part_stride * sizeof(float), page_size);
+    size_t partial_bytes = (size_t)workers * worker_stride;
+    if (workspace_bytes < packed_bytes + partial_bytes) return -2;
+{% if code.packing.value == "k_transposed" %}
+    float *packed_k = (float *)raw_workspace;
+{% endif %}
+    unsigned char *workspace = (unsigned char *)raw_workspace + packed_bytes;
+
+    int affinity_error = 0;
+    #pragma omp parallel num_threads(workers) reduction(|:affinity_error)
+    {
+        cpuattn_affinity_state original_affinity;
+        affinity_error |= omp_get_num_threads() != workers;
+        affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
+
+{% if code.packing.value == "k_transposed" %}
+        cpuattn_pack_k_for_owner(
+            k, packed_k, packed_copy_bytes, B, HKV, SKV, D, packed_skv,
+            worker_groups, workers, packed_owner_groups, packed_owner_count);
+        #pragma omp barrier
+{% endif %}
+
+        int worker = omp_get_thread_num();
+        int query_part = worker / key_parts;
+        int key_part = worker % key_parts;
+        int64_t begin = SKV * key_part / key_parts;
+        int64_t end = SKV * (key_part + 1) / key_parts;
+        for (int64_t row = query_part; row < rows; row += query_parts) {
+            int64_t qi = row % SQ;
+            int64_t hq = (row / SQ) % HQ;
+            int64_t b = row / (SQ * HQ);
+            int64_t hkv = hq * HKV / HQ;
+            int64_t q_base = ((b * HQ + hq) * SQ + qi) * D;
+{% if code.packing.value == "k_transposed" %}
+            int packed_slot = cpuattn_local_packed_slot(
+                worker_groups[worker], packed_owner_groups, packed_owner_count);
+            const float *packed_head = (const float *)((const unsigned char *)packed_k
+                + (size_t)packed_slot * packed_copy_bytes)
+                + (b * HKV + hkv) * D * packed_skv;
+{% else %}
+            const float *direct_head = k + (b * HKV + hkv) * SKV * D;
+{% endif %}
+            float *partial = (float *)(workspace + (size_t)worker * worker_stride)
+                + (size_t)row * part_stride;
+            for (int64_t dv = 0; dv < DV; ++dv) partial[dv] = 0.0f;
+            float scores[TILE_K];
+            float step_rescale[TILE_K];
+{% if row_norm.kind != "generic" %}
+            float output_scale[1];
+{% endif %}
+{% for state in row_norm.states %}
+            float state_{{ state.name }} = {{ state.initial_c }};
+{% endfor %}
+
+            for (int64_t kb = begin; kb < end; kb += TILE_K) {
+                int n_valid = (int)(end - kb < TILE_K ? end - kb : TILE_K);
+{% if code.packing.value == "k_transposed" %}
+                cpuattn_qk_packed_tile(
+                    q + q_base, packed_head + kb, scores, D, packed_skv, 1);
+{% else %}
+                cpuattn_qk_direct_tile(
+                    q + q_base, direct_head, scores, D, kb, n_valid, 1);
+{% endif %}
+                int n = 0;
+                for (; n + CPUATTN_SIMD_LANES <= n_valid; n += CPUATTN_SIMD_LANES) {
+                    int64_t ki = kb + n;
+                    cpuattn_simd_t raw_score_v = cpuattn_simd_load(scores + n);
+                    cpuattn_mask_t active_v = {{ mask_expr_simd }};
+                    cpuattn_simd_t score_v = {{ score_expr_simd }};
+{% if row_norm.kind == "softmax" %}
+                    score_v = cpuattn_simd_mul(
+                        score_v, cpuattn_simd_set1({{ row_norm.softmax_scale_c }}));
+                    score_v = cpuattn_simd_select(
+                        active_v, score_v, cpuattn_simd_set1(-INFINITY));
+{% else %}
+                    score_v = cpuattn_simd_select(active_v, score_v, cpuattn_simd_zero());
+{% endif %}
+                    cpuattn_simd_store(scores + n, score_v);
+                    cpuattn_simd_store(
+                        step_rescale + n,
+                        cpuattn_simd_select(
+                            active_v, cpuattn_simd_set1(1.0f), cpuattn_simd_zero()));
+                }
+                for (; n < n_valid; ++n) {
+                    int64_t ki = kb + n;
+                    float raw_score = scores[n];
+                    int active = {{ mask_expr }};
+                    step_rescale[n] = active ? 1.0f : 0.0f;
+                    scores[n] = active
+                        ? ({{ score_expr }}){% if row_norm.kind == "softmax" %} * {{ row_norm.softmax_scale_c }}{% endif %}
+                        : {% if row_norm.kind == "softmax" %}-INFINITY{% else %}0.0f{% endif %};
+                }
+
+{% if row_norm.kind == "softmax" %}
+                float row_max[1] = {state_m};
+                float row_sum[1] = {state_l};
+                cpuattn_softmax_tile(scores, row_max, row_sum, output_scale, n_valid, 1);
+                cpuattn_scale_inplace(partial, DV, output_scale[0]);
+                state_m = row_max[0];
+                state_l = row_sum[0];
+{% else %}
+                for (int n = 0; n < n_valid; ++n) {
+                    if (step_rescale[n] == 0.0f) {
+                        scores[n] = 0.0f;
+                        step_rescale[n] = 1.0f;
+                        continue;
+                    }
+                    float score = scores[n];
+{% for state in row_norm.states %}
+                    float old_{{ state.name }} = state_{{ state.name }};
+{% endfor %}
+{% for update in row_norm.updates %}
+                    float new_{{ update.state }} = {{ update.value_c }};
+{% endfor %}
+                    step_rescale[n] = {{ row_norm.rescale_c }};
+                    scores[n] = {{ row_norm.weight_c }};
+{% for state in row_norm.states %}
+                    state_{{ state.name }} = new_{{ state.name }};
+{% endfor %}
+                }
+                float suffix = 1.0f;
+                for (int n = n_valid - 1; n >= 0; --n) {
+                    scores[n] *= suffix;
+                    suffix *= step_rescale[n];
+                }
+                cpuattn_scale_inplace(partial, DV, suffix);
+{% endif %}
+                cpuattn_pv_tile(
+                    scores, v + ((b * HKV + hkv) * SKV + kb) * DV,
+                    partial, DV, n_valid, 1);
+            }
+{% for state in row_norm.states %}
+            partial[DV + {{ loop.index0 }}] = state_{{ state.name }};
+{% endfor %}
+        }
+
+        #pragma omp barrier
+        #pragma omp for schedule(static)
+        for (int64_t row = 0; row < rows; ++row) {
+            int query_part = (int)(row % query_parts);
+            int group_roots[group_count];
+            for (int group = 0; group < group_count; ++group) group_roots[group] = -1;
+            for (int part_index = 0; part_index < key_parts; ++part_index) {
+                int part_worker = query_part * key_parts + part_index;
+                int group = worker_groups[part_worker];
+                if (group_roots[group] < 0) group_roots[group] = part_worker;
+            }
+            for (int group = 0; group < group_count; ++group) {
+                int root = group_roots[group];
+                if (root < 0) continue;
+                float *group_output = (float *)(workspace + (size_t)root * worker_stride)
+                    + (size_t)row * part_stride;
+{% for state in row_norm.states %}
+                float group_{{ state.name }} = group_output[DV + {{ loop.index0 }}];
+{% endfor %}
+                for (int part_index = 0; part_index < key_parts; ++part_index) {
+                    int part_worker = query_part * key_parts + part_index;
+                    if (part_worker == root || worker_groups[part_worker] != group) continue;
+                    float *partial = (float *)(workspace + (size_t)part_worker * worker_stride)
+                        + (size_t)row * part_stride;
+{% for state in row_norm.states %}
+                    float left_{{ state.name }} = group_{{ state.name }};
+                    float right_{{ state.name }} = partial[DV + {{ loop.index0 }}];
+{% endfor %}
+{% for update in row_norm.merge_updates %}
+                    float merged_{{ update.state }} = {{ update.value_c }};
+{% endfor %}
+                    float left_scale = {{ row_norm.left_scale_c }};
+                    float right_scale = {{ row_norm.right_scale_c }};
+                    cpuattn_merge_inplace(
+                        group_output, partial, DV, left_scale, right_scale);
+{% for state in row_norm.states %}
+                    group_{{ state.name }} = merged_{{ state.name }};
+{% endfor %}
+                }
+{% for state in row_norm.states %}
+                group_output[DV + {{ loop.index0 }}] = group_{{ state.name }};
+{% endfor %}
+            }
+
+            int first_group = 0;
+            while (first_group < group_count && group_roots[first_group] < 0) ++first_group;
+            int first_worker = group_roots[first_group];
+            float *first = (float *)(workspace + (size_t)first_worker * worker_stride)
+                + (size_t)row * part_stride;
+            int64_t output_base = row * DV;
+            for (int64_t dv = 0; dv < DV; ++dv) output[output_base + dv] = first[dv];
+{% for state in row_norm.states %}
+            float state_{{ state.name }} = first[DV + {{ loop.index0 }}];
+{% endfor %}
+            for (int group = first_group + 1; group < group_count; ++group) {
+                int root = group_roots[group];
+                if (root < 0) continue;
+                float *partial = (float *)(workspace + (size_t)root * worker_stride)
+                    + (size_t)row * part_stride;
+{% for state in row_norm.states %}
+                float left_{{ state.name }} = state_{{ state.name }};
+                float right_{{ state.name }} = partial[DV + {{ loop.index0 }}];
+{% endfor %}
+{% for update in row_norm.merge_updates %}
+                float merged_{{ update.state }} = {{ update.value_c }};
+{% endfor %}
+                float left_scale = {{ row_norm.left_scale_c }};
+                float right_scale = {{ row_norm.right_scale_c }};
+                cpuattn_merge_inplace(output + output_base, partial, DV, left_scale, right_scale);
+{% for state in row_norm.states %}
+                state_{{ state.name }} = merged_{{ state.name }};
+{% endfor %}
+            }
+            float final_scale = {{ row_norm.final_scale_c }};
+            cpuattn_scale_inplace(output + output_base, DV, final_scale);
+        }
+        affinity_error |= cpuattn_restore_worker(&original_affinity) != 0;
+    }
+    return affinity_error ? 1 : 0;
+}
+
+int cpuattn_execute(
+    const float *restrict q,
+    const float *restrict k,
+    const float *restrict v,
+    float *restrict output{% for argument in arguments %},
+    const float *restrict arg_{{ argument.name }}{% endfor %},
+    int64_t B, int64_t HQ, int64_t HKV, int64_t SQ,
+    int64_t SKV, int64_t D, int64_t DV,
+    void *restrict workspace, size_t workspace_bytes,
+    const int *cpu_ids, int workers,
+    const int *worker_groups, int group_count,
+    const int *packed_owner_groups, int packed_owner_count,
+    uint64_t *elapsed_ns) {
+    if (!elapsed_ns || !workspace || workspace_bytes == 0) return -4;
+    uint64_t begin = cpuattn_now_ns();
+    int status = cpuattn_run(
+        q, k, v, output{% for argument in arguments %}, arg_{{ argument.name }}{% endfor %},
+        B, HQ, HKV, SQ, SKV, D, DV, workspace, workspace_bytes,
+        cpu_ids, workers, worker_groups, group_count,
+        packed_owner_groups, packed_owner_count);
+    *elapsed_ns = cpuattn_now_ns() - begin;
+    return status;
+}

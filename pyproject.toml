@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "CPUAttn"
+version = "0.1.0"
+description = "A small, structured CPU attention compiler and runtime"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "Jinja2>=3.1"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cpuattn = ["kernels/**/*.j2", "kernels/**/*.h", "kernels/**/*.c"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-ra"

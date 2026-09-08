@@ -1,0 +1,173 @@
+#define _GNU_SOURCE
+#include <math.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <omp.h>
+
+#define LINEAR_BLOCK {{ code.tile.q }}
+#define TILE_D {{ code.tile.d }}
+#define TILE_DV {{ code.tile.dv }}
+
+#include "common/threading.h"
+#include "common/executor.h"
+#include "simd/linear.h"
+#include "simd/expr.h"
+
+int cpuattn_run(
+    const float *restrict q,
+    const float *restrict k,
+    const float *restrict v,
+    float *restrict state,
+    float *restrict output{% for argument in arguments %},
+    const float *restrict arg_{{ argument.name }}{% endfor %},
+    int64_t B, int64_t G, int64_t H, int64_t S, int64_t D, int64_t DV,
+    void *restrict raw_workspace, size_t workspace_bytes,
+    const int *cpu_ids, int workers) {
+    if (!q || !k || !v || !state || !output || !raw_workspace || !cpu_ids || workers <= 0)
+        return -1;
+    size_t scratch_floats = 2u * LINEAR_BLOCK * D
+        + 2u * LINEAR_BLOCK * DV + LINEAR_BLOCK * LINEAR_BLOCK
+        + 3u * LINEAR_BLOCK;
+    size_t scratch_stride = cpuattn_align_size(
+        scratch_floats * sizeof(float), cpuattn_page_size());
+    if (workspace_bytes < (size_t)workers * scratch_stride) return -2;
+
+    int affinity_error = 0;
+    int64_t rows = B * H;
+    #pragma omp parallel num_threads(workers) reduction(|:affinity_error)
+    {
+        cpuattn_affinity_state original_affinity;
+        affinity_error |= omp_get_num_threads() != workers;
+        affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
+        float *scratch = (float *)((unsigned char *)raw_workspace
+            + (size_t)omp_get_thread_num() * scratch_stride);
+        float *q_block = scratch;
+        float *k_block = q_block + LINEAR_BLOCK * D;
+        float *v_block = k_block + LINEAR_BLOCK * D;
+        float *o_block = v_block + LINEAR_BLOCK * DV;
+        float *scores = o_block + LINEAR_BLOCK * DV;
+        float *decay = scores + LINEAR_BLOCK * LINEAR_BLOCK;
+        float *prefix = decay + LINEAR_BLOCK;
+        float *suffix = prefix + LINEAR_BLOCK;
+
+        #pragma omp for schedule(static)
+        for (int64_t row = 0; row < rows; ++row) {
+            int64_t h = row % H;
+            int64_t b = row / H;
+            int64_t g = h * G / H;
+            int64_t state_base = (b * H + h) * D * DV;
+            for (int64_t sb = 0; sb < S; sb += LINEAR_BLOCK) {
+                int valid = (int)(S - sb < LINEAR_BLOCK ? S - sb : LINEAR_BLOCK);
+                for (int m = 0; m < valid; ++m) {
+                    int64_t s = sb + m;
+                    int64_t q_base = ((b * G + g) * S + s) * D;
+                    int64_t v_base = ((b * H + h) * S + s) * DV;
+                    int64_t d = 0;
+                    for (; d + CPUATTN_SIMD_LANES <= D; d += CPUATTN_SIMD_LANES) {
+                        cpuattn_simd_t x_v = cpuattn_simd_load(q + q_base + d);
+                        cpuattn_simd_store(q_block + (int64_t)m * D + d, {{ q_mod_simd }});
+                        x_v = cpuattn_simd_load(k + q_base + d);
+                        cpuattn_simd_store(k_block + (int64_t)m * D + d, {{ k_mod_simd }});
+                    }
+                    for (; d < D; ++d) {
+                        float x = q[q_base + d];
+                        q_block[(int64_t)m * D + d] = {{ q_mod }};
+                        x = k[q_base + d];
+                        k_block[(int64_t)m * D + d] = {{ k_mod }};
+                    }
+                    int64_t dv = 0;
+                    for (; dv + CPUATTN_SIMD_LANES <= DV; dv += CPUATTN_SIMD_LANES) {
+                        cpuattn_simd_t x_v = cpuattn_simd_load(v + v_base + dv);
+                        cpuattn_simd_store(v_block + (int64_t)m * DV + dv, {{ v_mod_simd }});
+                    }
+                    for (; dv < DV; ++dv) {
+                        float x = v[v_base + dv];
+                        v_block[(int64_t)m * DV + dv] = {{ v_mod }};
+                    }
+                    decay[m] = {{ scale_expr }};
+                }
+
+                float running = 1.0f;
+                for (int m = 0; m < valid; ++m) {
+{% if read_before %}
+                    prefix[m] = running;
+                    running *= decay[m];
+{% else %}
+                    running *= decay[m];
+                    prefix[m] = running;
+{% endif %}
+                }
+                float block_scale = running;
+                running = 1.0f;
+                for (int j = valid - 1; j >= 0; --j) {
+                    suffix[j] = running;
+                    running *= decay[j];
+                }
+
+                cpuattn_linear_readout_block(
+                    q_block, state + state_base, o_block,
+                    D, DV, valid, prefix);
+                for (int m = 0; m < valid; ++m) {
+                    for (int j = 0; j < valid; ++j) {
+                        int active = j < m{% if not read_before %} || j == m{% endif %};
+                        float weight = 0.0f;
+                        if (active) {
+                            int end = m{% if read_before %} - 1{% endif %};
+                            float between = 1.0f;
+                            for (int r = j + 1; r <= end; ++r) between *= decay[r];
+                            weight = cpuattn_dot(
+                                q_block + (int64_t)m * D,
+                                k_block + (int64_t)j * D,
+                                D) * between;
+                        }
+                        scores[m * LINEAR_BLOCK + j] = weight;
+                    }
+                }
+                cpuattn_linear_values_block(
+                    scores, v_block, o_block, DV, valid);
+
+                for (int m = 0; m < valid; ++m) {
+                    int64_t s = sb + m;
+                    cpuattn_copy(
+                        output + ((b * H + h) * S + s) * DV,
+                        o_block + (int64_t)m * DV,
+                        DV);
+                }
+
+                for (int64_t d = 0; d < D; ++d)
+                    cpuattn_scale_inplace(
+                        state + state_base + d * DV, DV, block_scale);
+                for (int j = 0; j < valid; ++j) {
+                    for (int64_t d = 0; d < D; ++d)
+                        cpuattn_axpy_inplace(
+                            state + state_base + d * DV,
+                            v_block + (int64_t)j * DV,
+                            DV,
+                            k_block[(int64_t)j * D + d] * suffix[j]);
+                }
+            }
+        }
+        affinity_error |= cpuattn_restore_worker(&original_affinity) != 0;
+    }
+    return affinity_error ? 1 : 0;
+}
+
+int cpuattn_execute(
+    const float *restrict q,
+    const float *restrict k,
+    const float *restrict v,
+    float *restrict state,
+    float *restrict output{% for argument in arguments %},
+    const float *restrict arg_{{ argument.name }}{% endfor %},
+    int64_t B, int64_t G, int64_t H, int64_t S, int64_t D, int64_t DV,
+    void *restrict workspace, size_t workspace_bytes,
+    const int *cpu_ids, int workers,
+    uint64_t *elapsed_ns) {
+    if (!elapsed_ns || !workspace || workspace_bytes == 0) return -4;
+    uint64_t begin = cpuattn_now_ns();
+    int status = cpuattn_run(
+        q, k, v, state, output{% for argument in arguments %}, arg_{{ argument.name }}{% endfor %},
+        B, G, H, S, D, DV, workspace, workspace_bytes, cpu_ids, workers);
+    *elapsed_ns = cpuattn_now_ns() - begin;
+    return status;
+}

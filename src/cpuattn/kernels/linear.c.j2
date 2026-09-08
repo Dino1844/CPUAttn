@@ -1,0 +1,112 @@
+#define _GNU_SOURCE
+#include <math.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <omp.h>
+#include "common/threading.h"
+#include "common/executor.h"
+
+#define TILE_D {{ code.tile.d }}
+#define TILE_DV {{ code.tile.dv }}
+#define LINEAR_BLOCK 1
+
+#include "simd/linear.h"
+#include "simd/expr.h"
+
+int cpuattn_run(
+    const float *restrict q,
+    const float *restrict k,
+    const float *restrict v,
+    float *restrict state,
+    float *restrict output{% for argument in arguments %},
+    const float *restrict arg_{{ argument.name }}{% endfor %},
+    int64_t B, int64_t G, int64_t H, int64_t S, int64_t D, int64_t DV,
+    void *restrict raw_workspace, size_t workspace_bytes,
+    const int *cpu_ids, int workers) {
+    if (!q || !k || !v || !state || !output || !raw_workspace || !cpu_ids || workers <= 0) return -1;
+    size_t scratch_stride = cpuattn_align_size(
+        (size_t)(2 * D + 2 * DV) * sizeof(float), cpuattn_page_size());
+    if (workspace_bytes < (size_t)workers * scratch_stride) return -2;
+    int affinity_error = 0;
+    int64_t rows = B * H;
+    #pragma omp parallel num_threads(workers) reduction(|:affinity_error)
+    {
+        cpuattn_affinity_state original_affinity;
+        affinity_error |= omp_get_num_threads() != workers;
+        affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
+        float *qv = (float *)((unsigned char *)raw_workspace
+            + (size_t)omp_get_thread_num() * scratch_stride);
+        float *kv = qv + D;
+        float *vv = kv + D;
+        float *linear_tmp = vv + DV;
+        #pragma omp for schedule(static)
+        for (int64_t row = 0; row < rows; ++row) {
+            int64_t h = row % H;
+            int64_t b = row / H;
+            int64_t g = h * G / H;
+            int64_t state_base = (b * H + h) * D * DV;
+            for (int64_t s = 0; s < S; ++s) {
+                int64_t q_base = ((b * G + g) * S + s) * D;
+                int64_t v_base = ((b * H + h) * S + s) * DV;
+                int64_t output_base = ((b * H + h) * S + s) * DV;
+                for (int64_t db = 0; db < D; db += TILE_D) {
+                    int64_t dend = db + TILE_D < D ? db + TILE_D : D;
+                    int64_t d = db;
+                    for (; d + CPUATTN_SIMD_LANES <= dend; d += CPUATTN_SIMD_LANES) {
+                        cpuattn_simd_t x_v = cpuattn_simd_load(q + q_base + d);
+                        cpuattn_simd_store(qv + d, {{ q_mod_simd }});
+                        x_v = cpuattn_simd_load(k + q_base + d);
+                        cpuattn_simd_store(kv + d, {{ k_mod_simd }});
+                    }
+                    for (; d < dend; ++d) {
+                        float x = q[q_base + d];
+                        qv[d] = {{ q_mod }};
+                        x = k[q_base + d];
+                        kv[d] = {{ k_mod }};
+                    }
+                }
+                for (int64_t dvb = 0; dvb < DV; dvb += TILE_DV) {
+                    int64_t dvend = dvb + TILE_DV < DV ? dvb + TILE_DV : DV;
+                    int64_t dv = dvb;
+                    for (; dv + CPUATTN_SIMD_LANES <= dvend; dv += CPUATTN_SIMD_LANES) {
+                        cpuattn_simd_t x_v = cpuattn_simd_load(v + v_base + dv);
+                        cpuattn_simd_store(vv + dv, {{ v_mod_simd }});
+                    }
+                    for (; dv < dvend; ++dv) {
+                        float x = v[v_base + dv];
+                        vv[dv] = {{ v_mod }};
+                    }
+                }
+{% if read_before %}
+{{ readout_code | indent(16, true) }}
+{% endif %}
+{{ transition_code | indent(16, true) }}
+{% if not read_before %}
+{{ readout_code | indent(16, true) }}
+{% endif %}
+            }
+        }
+        affinity_error |= cpuattn_restore_worker(&original_affinity) != 0;
+    }
+    return affinity_error ? 1 : 0;
+}
+
+int cpuattn_execute(
+    const float *restrict q,
+    const float *restrict k,
+    const float *restrict v,
+    float *restrict state,
+    float *restrict output{% for argument in arguments %},
+    const float *restrict arg_{{ argument.name }}{% endfor %},
+    int64_t B, int64_t G, int64_t H, int64_t S, int64_t D, int64_t DV,
+    void *restrict workspace, size_t workspace_bytes,
+    const int *cpu_ids, int workers,
+    uint64_t *elapsed_ns) {
+    if (!elapsed_ns || !workspace || workspace_bytes == 0) return -4;
+    uint64_t begin = cpuattn_now_ns();
+    int status = cpuattn_run(
+        q, k, v, state, output{% for argument in arguments %}, arg_{{ argument.name }}{% endfor %},
+        B, G, H, S, D, DV, workspace, workspace_bytes, cpu_ids, workers);
+    *elapsed_ns = cpuattn_now_ns() - begin;
+    return status;
+}
