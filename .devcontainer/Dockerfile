@@ -8,6 +8,7 @@ RUN apt-get update \
         ca-certificates \
         gcc-aarch64-linux-gnu \
         git \
+        libc6-dev-arm64-cross \
         libgomp1 \
         python3 \
         python3-pip \

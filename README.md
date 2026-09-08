@@ -234,7 +234,9 @@ compiler, and pinned CPU-only PyTorch/NumPy test dependencies. Task B does not
 use FUSE or overlayfs, so the container deliberately does not request
 `--privileged`.
 
-In VS Code, install the Dev Containers extension, open this directory, and run
+### VS Code DevContainer
+
+Install the Dev Containers extension, open this directory, and run
 `Dev Containers: Reopen in Container`. The project is installed in editable
 mode when the container is created. Then run:
 
@@ -242,6 +244,17 @@ mode when the container is created. Then run:
 ./scripts/codegen.sh
 ./scripts/correctness.sh
 ./scripts/benchmark.sh
+```
+
+### DevContainer CLI
+
+With Docker and the Dev Container CLI installed, the same environment can be
+started and tested without VS Code:
+
+```bash
+devcontainer up --workspace-folder .
+devcontainer exec --workspace-folder . python -m pytest -q
+devcontainer exec --workspace-folder . bash
 ```
 
 `codegen.sh` exercises the complete native generation path for representative
@@ -252,7 +265,9 @@ shared library for every legal code plan. `correctness.sh` runs the compact DSL,
 reference, and end-to-end native Runtime checks. Run `python -m pytest -q` for
 the complete test suite, including architecture and cross-compilation checks.
 
-The same image can be used without VS Code:
+### Docker
+
+The same image can also be built and used directly:
 
 ```bash
 docker build -f .devcontainer/Dockerfile -t cpuattn .
