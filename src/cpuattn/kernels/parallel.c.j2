@@ -69,7 +69,7 @@ int cpuattn_run(
         #pragma omp barrier
 {% endif %}
 
-        #pragma omp for schedule(static)
+        #pragma omp for schedule(static, 1)
         for (int64_t work = 0; work < work_items; ++work) {
             int64_t qb_index = work % q_blocks;
             int64_t hq = (work / q_blocks) % HQ;
@@ -124,6 +124,7 @@ int cpuattn_run(
                     q_tile, direct_head, scores, D, kb, n_valid, m_valid);
 {% endif %}
 
+{% if row_norm.kind == "softmax" %}
                 for (int m = 0; m < m_valid; ++m) {
                     int64_t qi = qb + m;
                     int n = 0;
@@ -133,14 +134,42 @@ int cpuattn_run(
                         cpuattn_simd_t raw_score_v = cpuattn_simd_load(scores + index);
                         cpuattn_mask_t active_v = {{ mask_expr_simd }};
                         cpuattn_simd_t score_v = {{ score_expr_simd }};
-{% if row_norm.kind == "softmax" %}
                         score_v = cpuattn_simd_mul(
                             score_v, cpuattn_simd_set1({{ row_norm.softmax_scale_c }}));
                         score_v = cpuattn_simd_select(
                             active_v, score_v, cpuattn_simd_set1(-INFINITY));
+                        cpuattn_simd_store(scores + index, score_v);
+                    }
+                    for (; n < n_valid; ++n) {
+                        int64_t ki = kb + n;
+                        int index = m * TILE_K + n;
+                        float raw_score = scores[index];
+                        int active = {{ mask_expr }};
+                        scores[index] = active
+                            ? ({{ score_expr }}) * {{ row_norm.softmax_scale_c }}
+                            : -INFINITY;
+                    }
+                }
+
+                cpuattn_softmax_tile(
+                    scores, rows_m, rows_l, output_scale, n_valid, m_valid);
+                for (int m = 0; m < m_valid; ++m) {
+                    float value = output_scale[m];
+                    if (value != 0.0f && value != 1.0f)
+                        cpuattn_scale_inplace(
+                            output_tile + (int64_t)m * DV, DV, value);
+                }
 {% else %}
+                for (int m = 0; m < m_valid; ++m) {
+                    int64_t qi = qb + m;
+                    int n = 0;
+                    for (; n + CPUATTN_SIMD_LANES <= n_valid; n += CPUATTN_SIMD_LANES) {
+                        int64_t ki = kb + n;
+                        int index = m * TILE_K + n;
+                        cpuattn_simd_t raw_score_v = cpuattn_simd_load(scores + index);
+                        cpuattn_mask_t active_v = {{ mask_expr_simd }};
+                        cpuattn_simd_t score_v = {{ score_expr_simd }};
                         score_v = cpuattn_simd_select(active_v, score_v, cpuattn_simd_zero());
-{% endif %}
                         cpuattn_simd_store(scores + index, score_v);
                         cpuattn_simd_store(
                             step_rescale + index,
@@ -153,19 +182,9 @@ int cpuattn_run(
                         float raw_score = scores[index];
                         int active = {{ mask_expr }};
                         step_rescale[index] = active ? 1.0f : 0.0f;
-                        scores[index] = active
-                            ? ({{ score_expr }}){% if row_norm.kind == "softmax" %} * {{ row_norm.softmax_scale_c }}{% endif %}
-                            : {% if row_norm.kind == "softmax" %}-INFINITY{% else %}0.0f{% endif %};
+                        scores[index] = active ? ({{ score_expr }}) : 0.0f;
                     }
                 }
-
-{% if row_norm.kind == "softmax" %}
-                cpuattn_softmax_tile(
-                    scores, rows_m, rows_l, output_scale, n_valid, m_valid);
-                for (int m = 0; m < m_valid; ++m)
-                    cpuattn_scale_inplace(
-                        output_tile + (int64_t)m * DV, DV, output_scale[m]);
-{% else %}
                 for (int m = 0; m < m_valid; ++m) {
                     int64_t qi = qb + m;
                     for (int n = 0; n < n_valid; ++n) {

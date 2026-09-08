@@ -80,8 +80,32 @@ static inline void cpuattn_softmax_tile(
         float *row = scores + m * TILE_K;
         float next_max = fmaxf(row_max[m], cpuattn_reduce_max(row, n_valid));
         float scale = row_sum[m] > 0.0f ? expf(row_max[m] - next_max) : 0.0f;
-        cpuattn_exp_submax_inplace(row, next_max, n_valid);
-        row_sum[m] = row_sum[m] * scale + cpuattn_reduce_sum(row, n_valid);
+        /* Masked lanes hold exactly -INFINITY, written by the caller's masked
+           score transform. cpuattn_exp_ps clamps its input to [-87, 88], so
+           exp(-INFINITY) would yield ~1.6e-38 rather than 0; the explicit
+           select below is what zeroes masked lanes. */
+        const cpuattn_simd_t offset = cpuattn_simd_set1(next_max);
+        const cpuattn_simd_t negative_infinity = cpuattn_simd_set1(-INFINITY);
+        cpuattn_simd_t total = cpuattn_simd_zero();
+        float tail_sum = 0.0f;
+        int n = 0;
+        for (; n + CPUATTN_SIMD_LANES <= n_valid; n += CPUATTN_SIMD_LANES) {
+            cpuattn_simd_t values = cpuattn_simd_load(row + n);
+            cpuattn_mask_t masked = cpuattn_simd_eq(values, negative_infinity);
+            cpuattn_simd_t result = cpuattn_simd_exp(
+                cpuattn_simd_sub(values, offset));
+            result = cpuattn_simd_select(masked, cpuattn_simd_zero(), result);
+            cpuattn_simd_store(row + n, result);
+            total = cpuattn_simd_add(total, result);
+        }
+        for (; n < n_valid; ++n) {
+            float value = row[n];
+            float result = value == -INFINITY ? 0.0f : expf(value - next_max);
+            row[n] = result;
+            tail_sum += result;
+        }
+        row_sum[m] = row_sum[m] * scale
+            + cpuattn_simd_reduce_add(total) + tail_sum;
         row_max[m] = next_max;
         output_scale[m] = scale;
     }

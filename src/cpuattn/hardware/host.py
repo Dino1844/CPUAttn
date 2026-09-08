@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ctypes
 import hashlib
 import json
@@ -53,6 +53,9 @@ class Host:
     cpus: tuple[LogicalCpu, ...]
     caches: tuple[Cache, ...] = ()
     sve_vector_bytes: int | None = None
+    _fingerprint_memo: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if self.architecture not in {"x86_64", "aarch64"}:
@@ -84,8 +87,12 @@ class Host:
 
     @property
     def fingerprint(self) -> str:
-        data = json.dumps(self.canonical(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(data.encode()).hexdigest()
+        if self._fingerprint_memo is None:
+            data = json.dumps(self.canonical(), sort_keys=True, separators=(",", ":"))
+            object.__setattr__(
+                self, "_fingerprint_memo", hashlib.sha256(data.encode()).hexdigest()
+            )
+        return self._fingerprint_memo
 
 
 def detect_host() -> Host:

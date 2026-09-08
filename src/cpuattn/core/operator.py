@@ -29,22 +29,33 @@ class Parallel:
     arguments: tuple[TensorArgSpec, ...] = ()
 
     pattern: str = field(default="parallel", init=False)
+    # canonical() memoizes into this slot and returns the shared dict:
+    # callers must treat canonical() output as read-only.
+    _canonical_memo: tuple[dict[str, object], str] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         _validate_argument_names(self.arguments)
 
+    def _memo(self) -> tuple[dict[str, object], str]:
+        if self._canonical_memo is None:
+            canonical = {
+                "pattern": self.pattern,
+                "score_mod": self.score_mod.canonical(),
+                "mask_mod": self.mask_mod.canonical(),
+                "row_norm": self.row_norm.canonical(),
+                "arguments": _arguments_canonical(self.arguments),
+            }
+            object.__setattr__(self, "_canonical_memo", (canonical, _fingerprint(canonical)))
+        return self._canonical_memo
+
     def canonical(self) -> dict[str, object]:
-        return {
-            "pattern": self.pattern,
-            "score_mod": self.score_mod.canonical(),
-            "mask_mod": self.mask_mod.canonical(),
-            "row_norm": self.row_norm.canonical(),
-            "arguments": _arguments_canonical(self.arguments),
-        }
+        return self._memo()[0]
 
     @property
     def fingerprint(self) -> str:
-        return _fingerprint(self.canonical())
+        return self._memo()[1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,24 +68,35 @@ class Linear:
     arguments: tuple[TensorArgSpec, ...] = ()
 
     pattern: str = field(default="linear", init=False)
+    # canonical() memoizes into this slot and returns the shared dict:
+    # callers must treat canonical() output as read-only.
+    _canonical_memo: tuple[dict[str, object], str] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         _validate_argument_names(self.arguments)
 
+    def _memo(self) -> tuple[dict[str, object], str]:
+        if self._canonical_memo is None:
+            canonical = {
+                "pattern": self.pattern,
+                "transition": self.transition.canonical(),
+                "readout": self.readout.canonical(),
+                "q_mod": self.q_mod.canonical(),
+                "k_mod": self.k_mod.canonical(),
+                "v_mod": self.v_mod.canonical(),
+                "arguments": _arguments_canonical(self.arguments),
+            }
+            object.__setattr__(self, "_canonical_memo", (canonical, _fingerprint(canonical)))
+        return self._canonical_memo
+
     def canonical(self) -> dict[str, object]:
-        return {
-            "pattern": self.pattern,
-            "transition": self.transition.canonical(),
-            "readout": self.readout.canonical(),
-            "q_mod": self.q_mod.canonical(),
-            "k_mod": self.k_mod.canonical(),
-            "v_mod": self.v_mod.canonical(),
-            "arguments": _arguments_canonical(self.arguments),
-        }
+        return self._memo()[0]
 
     @property
     def fingerprint(self) -> str:
-        return _fingerprint(self.canonical())
+        return self._memo()[1]
 
 
 Operator = Parallel | Linear

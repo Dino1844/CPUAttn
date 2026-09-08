@@ -12,6 +12,7 @@ class WorkerCountTuner(Tuner):
     """Measure one statically chosen plan for each selected worker count."""
 
     maxnum: int | None = 6
+    version = 2
 
     def choose_next(
         self,
@@ -33,17 +34,22 @@ def _representatives(
     context: TuningContext,
     limit: int | None,
 ) -> tuple[ExecutionPlan, ...]:
-    by_workers: dict[int, list[ExecutionPlan]] = {}
+    by_key: dict[tuple[int, PackingKind], list[ExecutionPlan]] = {}
     for plan in context.candidates:
-        by_workers.setdefault(plan.launch.workers, []).append(plan)
-    anchors = _worker_anchors(by_workers, context, limit)
-    return tuple(
-        min(
-            by_workers[workers],
-            key=lambda plan: _plan_preference(plan, context),
-        )
-        for workers in anchors
-    )
+        by_key.setdefault((plan.launch.workers, plan.code.packing), []).append(plan)
+    anchors = _worker_anchors({workers for workers, _ in by_key}, context, limit)
+    representatives: list[ExecutionPlan] = []
+    for workers in anchors:
+        for packing in PackingKind:
+            group = by_key.get((workers, packing))
+            if group:
+                representatives.append(
+                    min(
+                        group,
+                        key=lambda plan: _plan_preference(plan, context),
+                    )
+                )
+    return tuple(representatives)
 
 
 def _worker_anchors(
@@ -55,7 +61,7 @@ def _worker_anchors(
     if not legal:
         return ()
     if limit is None or len(legal) <= limit:
-        return tuple(sorted(legal))
+        return tuple(sorted(legal, reverse=True))
 
     physical_by_node: dict[int, set[tuple[int, int]]] = {}
     for cpu in context.host.cpus:
@@ -73,7 +79,7 @@ def _worker_anchors(
     priority.extend(
         workers for workers in sorted(legal, reverse=True) if workers not in priority
     )
-    return tuple(sorted(priority[:limit]))
+    return tuple(priority[:limit])
 
 
 def _plan_preference(

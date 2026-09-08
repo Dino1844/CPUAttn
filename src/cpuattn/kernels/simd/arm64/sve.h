@@ -83,17 +83,6 @@ static inline float cpuattn_reduce_max(const float *x, int n) {
     return svmaxv_f32(svptrue_b32(), maximum);
 }
 
-static inline float cpuattn_reduce_sum(const float *x, int n) {
-    svfloat32_t total = svdup_n_f32(0.0f);
-    int i = 0;
-    while (i < n) {
-        svbool_t active = svwhilelt_b32((uint64_t)i, (uint64_t)n);
-        total = svadd_f32_m(active, total, svld1_f32(active, x + i));
-        i += CPUATTN_SIMD_LANES;
-    }
-    return svaddv_f32(svptrue_b32(), total);
-}
-
 static inline svfloat32_t cpuattn_exp_ps(svbool_t active, svfloat32_t x) {
     x = svmax_n_f32_x(active, x, -87.0f);
     x = svmin_n_f32_x(active, x, 88.0f);
@@ -137,19 +126,6 @@ static inline cpuattn_simd_t cpuattn_simd_log(cpuattn_simd_t x) {
         svcvt_f32_s32_x(pg, exponent), 0.6931471805599453f);
     result = svsel_f32(svcmpeq_n_f32(pg, x, 0.0f), svdup_n_f32(-INFINITY), result);
     return svsel_f32(svcmplt_n_f32(pg, x, 0.0f), svdup_n_f32(NAN), result);
-}
-
-static inline void cpuattn_exp_submax_inplace(float *x, float maximum, int n) {
-    int i = 0;
-    while (i < n) {
-        svbool_t active = svwhilelt_b32((uint64_t)i, (uint64_t)n);
-        svfloat32_t input = svld1_f32(active, x + i);
-        svbool_t masked = svcmpeq_n_f32(active, input, -INFINITY);
-        svfloat32_t shifted = svsub_n_f32_x(active, input, maximum);
-        svfloat32_t result = cpuattn_exp_ps(active, shifted);
-        svst1_f32(active, x + i, svsel_f32(masked, svdup_n_f32(0.0f), result));
-        i += CPUATTN_SIMD_LANES;
-    }
 }
 
 static inline void cpuattn_scale_inplace(float *x, int64_t n, float scale) {

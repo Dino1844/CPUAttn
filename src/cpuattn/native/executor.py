@@ -16,6 +16,7 @@ class Executor:
         self._arena: mmap.mmap | None = None
         self._arena_view: np.ndarray | None = None
         self._arena_key: tuple[str, tuple[tuple[int, tuple[int, ...]], ...]] | None = None
+        self._prepared: set[tuple[str, tuple[int, ...]]] = set()
 
     def _workspace_for(self, plan: ExecutionPlan) -> np.ndarray:
         topology = tuple(
@@ -40,6 +41,9 @@ class Executor:
         self._arena_key = None
 
     def prepare_launch(self, kernel: NativeKernel, launch: LaunchPlan) -> None:
+        token = (kernel.compiled.artifact_key, launch.cpu_ids)
+        if token in self._prepared:
+            return
         cpu_ids = np.asarray(launch.cpu_ids, dtype=np.int32)
         status = kernel._prepare_launch(
             ctypes.c_void_p(cpu_ids.ctypes.data),
@@ -47,6 +51,7 @@ class Executor:
         )
         if status != 0:
             raise RuntimeError(f"native launch preconditioning failed with status {status}")
+        self._prepared.add(token)
 
     def run(
         self,

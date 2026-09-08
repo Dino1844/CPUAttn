@@ -83,16 +83,6 @@ static inline float cpuattn_reduce_max(const float *x, int n) {
     return result;
 }
 
-static inline float cpuattn_reduce_sum(const float *x, int n) {
-    float32x4_t total = vdupq_n_f32(0.0f);
-    int i = 0;
-    for (; i + CPUATTN_SIMD_LANES <= n; i += CPUATTN_SIMD_LANES)
-        total = vaddq_f32(total, vld1q_f32(x + i));
-    float result = vaddvq_f32(total);
-    for (; i < n; ++i) result += x[i];
-    return result;
-}
-
 static inline float32x4_t cpuattn_exp_ps(float32x4_t x) {
     x = vminq_f32(vmaxq_f32(x, vdupq_n_f32(-87.0f)), vdupq_n_f32(88.0f));
     float32x4_t kf = vrndnq_f32(vmulq_n_f32(x, 1.44269504088896341f));
@@ -132,20 +122,6 @@ static inline cpuattn_simd_t cpuattn_simd_log(cpuattn_simd_t x) {
         vcvtq_f32_s32(exponent), 0.6931471805599453f);
     result = vbslq_f32(vceqq_f32(x, vdupq_n_f32(0.0f)), vdupq_n_f32(-INFINITY), result);
     return vbslq_f32(vcltq_f32(x, vdupq_n_f32(0.0f)), vdupq_n_f32(NAN), result);
-}
-
-static inline void cpuattn_exp_submax_inplace(float *x, float maximum, int n) {
-    const float32x4_t offset = vdupq_n_f32(maximum);
-    const float32x4_t negative_infinity = vdupq_n_f32(-INFINITY);
-    int i = 0;
-    for (; i + CPUATTN_SIMD_LANES <= n; i += CPUATTN_SIMD_LANES) {
-        float32x4_t input = vld1q_f32(x + i);
-        uint32x4_t masked = vceqq_f32(input, negative_infinity);
-        float32x4_t result = cpuattn_exp_ps(vsubq_f32(input, offset));
-        vst1q_f32(x + i, vbslq_f32(masked, vdupq_n_f32(0.0f), result));
-    }
-    for (; i < n; ++i)
-        x[i] = x[i] == -INFINITY ? 0.0f : expf(x[i] - maximum);
 }
 
 static inline void cpuattn_scale_inplace(float *x, int64_t n, float scale) {

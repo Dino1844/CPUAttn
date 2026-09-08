@@ -97,19 +97,6 @@ static inline float cpuattn_reduce_max(const float *x, int n) {
     return result;
 }
 
-static inline float cpuattn_reduce_sum(const float *x, int n) {
-    __m256 total = _mm256_setzero_ps();
-    int i = 0;
-    for (; i + CPUATTN_SIMD_LANES <= n; i += CPUATTN_SIMD_LANES)
-        total = _mm256_add_ps(total, _mm256_loadu_ps(x + i));
-    float lanes[CPUATTN_SIMD_LANES];
-    _mm256_storeu_ps(lanes, total);
-    float result = 0.0f;
-    for (int lane = 0; lane < CPUATTN_SIMD_LANES; ++lane) result += lanes[lane];
-    for (; i < n; ++i) result += x[i];
-    return result;
-}
-
 static inline __m256 cpuattn_exp_ps(__m256 x) {
     x = _mm256_min_ps(
         _mm256_max_ps(x, _mm256_set1_ps(-87.0f)),
@@ -157,20 +144,6 @@ static inline cpuattn_simd_t cpuattn_simd_log(cpuattn_simd_t x) {
     __m256 zero = _mm256_setzero_ps();
     result = _mm256_blendv_ps(result, _mm256_set1_ps(-INFINITY), _mm256_cmp_ps(x, zero, _CMP_EQ_OQ));
     return _mm256_blendv_ps(result, _mm256_set1_ps(NAN), _mm256_cmp_ps(x, zero, _CMP_LT_OQ));
-}
-
-static inline void cpuattn_exp_submax_inplace(float *x, float maximum, int n) {
-    const __m256 offset = _mm256_set1_ps(maximum);
-    const __m256 negative_infinity = _mm256_set1_ps(-INFINITY);
-    int i = 0;
-    for (; i + CPUATTN_SIMD_LANES <= n; i += CPUATTN_SIMD_LANES) {
-        __m256 input = _mm256_loadu_ps(x + i);
-        __m256 masked = _mm256_cmp_ps(input, negative_infinity, _CMP_EQ_OQ);
-        __m256 result = cpuattn_exp_ps(_mm256_sub_ps(input, offset));
-        _mm256_storeu_ps(x + i, _mm256_blendv_ps(result, _mm256_setzero_ps(), masked));
-    }
-    for (; i < n; ++i)
-        x[i] = x[i] == -INFINITY ? 0.0f : expf(x[i] - maximum);
 }
 
 static inline void cpuattn_scale_inplace(float *x, int64_t n, float scale) {

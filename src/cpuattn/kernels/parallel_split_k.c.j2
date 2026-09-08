@@ -101,8 +101,13 @@ int cpuattn_run(
             float state_{{ state.name }} = {{ state.initial_c }};
 {% endfor %}
 
-            for (int64_t kb = begin; kb < end; kb += TILE_K) {
-                int n_valid = (int)(end - kb < TILE_K ? end - kb : TILE_K);
+            int64_t key_end = end;
+#if CAUSAL_BLOCK_LIMIT
+            if ({{ query_offset }} + qi + 1 < key_end)
+                key_end = {{ query_offset }} + qi + 1;
+#endif
+            for (int64_t kb = begin; kb < key_end; kb += TILE_K) {
+                int n_valid = (int)(key_end - kb < TILE_K ? key_end - kb : TILE_K);
 {% if code.packing.value == "k_transposed" %}
                 cpuattn_qk_packed_tile(
                     q + q_base, packed_head + kb, scores, D, packed_skv, 1);
@@ -126,16 +131,20 @@ int cpuattn_run(
                     score_v = cpuattn_simd_select(active_v, score_v, cpuattn_simd_zero());
 {% endif %}
                     cpuattn_simd_store(scores + n, score_v);
+{% if row_norm.kind != "softmax" %}
                     cpuattn_simd_store(
                         step_rescale + n,
                         cpuattn_simd_select(
                             active_v, cpuattn_simd_set1(1.0f), cpuattn_simd_zero()));
+{% endif %}
                 }
                 for (; n < n_valid; ++n) {
                     int64_t ki = kb + n;
                     float raw_score = scores[n];
                     int active = {{ mask_expr }};
+{% if row_norm.kind != "softmax" %}
                     step_rescale[n] = active ? 1.0f : 0.0f;
+{% endif %}
                     scores[n] = active
                         ? ({{ score_expr }}){% if row_norm.kind == "softmax" %} * {{ row_norm.softmax_scale_c }}{% endif %}
                         : {% if row_norm.kind == "softmax" %}-INFINITY{% else %}0.0f{% endif %};
@@ -146,7 +155,8 @@ int cpuattn_run(
                 float row_sum[1] = {state_l};
                 cpuattn_softmax_tile(
                     scores, row_max, row_sum, output_scale, n_valid, 1);
-                cpuattn_scale_inplace(partial, DV, output_scale[0]);
+                if (output_scale[0] != 0.0f && output_scale[0] != 1.0f)
+                    cpuattn_scale_inplace(partial, DV, output_scale[0]);
                 state_m = row_max[0];
                 state_l = row_sum[0];
 {% else %}

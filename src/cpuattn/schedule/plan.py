@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 import hashlib
 import json
@@ -89,6 +89,11 @@ class CodePlan:
     merge: MergeKind
     fusion: FusionKind
     workspace_abi: WorkspaceABI
+    # canonical() memoizes into this slot and returns the shared dict:
+    # callers must treat canonical() output as read-only.
+    _canonical_memo: tuple[dict[str, Any], str] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if not self.backend_id or self.vector_bytes <= 0:
@@ -109,12 +114,18 @@ class CodePlan:
         elif self.merge is not MergeKind.NONE:
             raise ValueError("non-split code plans cannot declare a merge")
 
+    def _memo(self) -> tuple[dict[str, Any], str]:
+        if self._canonical_memo is None:
+            canonical = _canonical(self)
+            object.__setattr__(self, "_canonical_memo", (canonical, _digest(canonical)))
+        return self._canonical_memo
+
     def canonical(self) -> dict[str, Any]:
-        return _canonical(self)
+        return self._memo()[0]
 
     @property
     def identity(self) -> str:
-        return _digest(self.canonical())
+        return self._memo()[1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,13 +233,18 @@ class ExecutionPlan:
     code: CodePlan
     launch: LaunchPlan
     memory: MemoryPlan
+    _identity_memo: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def canonical(self) -> dict[str, Any]:
         return _canonical(self)
 
     @property
     def identity(self) -> str:
-        return _digest(self.canonical())
+        if self._identity_memo is None:
+            object.__setattr__(self, "_identity_memo", _digest(self.canonical()))
+        return self._identity_memo
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,7 +272,11 @@ def _canonical(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _canonical(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: _canonical(getattr(value, field.name))
+            for field in fields(value)
+            if not field.name.startswith("_")
+        }
     if isinstance(value, tuple):
         return [_canonical(item) for item in value]
     if isinstance(value, dict):

@@ -88,18 +88,6 @@ static inline float cpuattn_reduce_max(const float *x, int n) {
     return _mm512_reduce_max_ps(maximum);
 }
 
-static inline float cpuattn_reduce_sum(const float *x, int n) {
-    __m512 total = _mm512_setzero_ps();
-    int i = 0;
-    for (; i + CPUATTN_SIMD_LANES <= n; i += CPUATTN_SIMD_LANES)
-        total = _mm512_add_ps(total, _mm512_loadu_ps(x + i));
-    if (i < n) {
-        __mmask16 mask = (__mmask16)((1u << (n - i)) - 1u);
-        total = _mm512_add_ps(total, _mm512_maskz_loadu_ps(mask, x + i));
-    }
-    return _mm512_reduce_add_ps(total);
-}
-
 static inline __m512 cpuattn_exp_ps(__m512 x) {
     x = _mm512_min_ps(
         _mm512_max_ps(x, _mm512_set1_ps(-87.0f)),
@@ -147,26 +135,6 @@ static inline cpuattn_simd_t cpuattn_simd_log(cpuattn_simd_t x) {
     __m512 zero = _mm512_setzero_ps();
     result = _mm512_mask_mov_ps(result, _mm512_cmp_ps_mask(x, zero, _CMP_EQ_OQ), _mm512_set1_ps(-INFINITY));
     return _mm512_mask_mov_ps(result, _mm512_cmp_ps_mask(x, zero, _CMP_LT_OQ), _mm512_set1_ps(NAN));
-}
-
-static inline void cpuattn_exp_submax_inplace(float *x, float maximum, int n) {
-    const __m512 offset = _mm512_set1_ps(maximum);
-    const __m512 negative_infinity = _mm512_set1_ps(-INFINITY);
-    int i = 0;
-    for (; i + CPUATTN_SIMD_LANES <= n; i += CPUATTN_SIMD_LANES) {
-        __m512 input = _mm512_loadu_ps(x + i);
-        __mmask16 masked = _mm512_cmp_ps_mask(input, negative_infinity, _CMP_EQ_OQ);
-        __m512 result = cpuattn_exp_ps(_mm512_sub_ps(input, offset));
-        _mm512_storeu_ps(x + i, _mm512_mask_mov_ps(result, masked, _mm512_setzero_ps()));
-    }
-    if (i < n) {
-        __mmask16 tail = (__mmask16)((1u << (n - i)) - 1u);
-        __m512 input = _mm512_maskz_loadu_ps(tail, x + i);
-        __mmask16 masked = _mm512_cmp_ps_mask(input, negative_infinity, _CMP_EQ_OQ);
-        __m512 result = cpuattn_exp_ps(_mm512_sub_ps(input, offset));
-        result = _mm512_mask_mov_ps(result, masked, _mm512_setzero_ps());
-        _mm512_mask_storeu_ps(x + i, tail, result);
-    }
 }
 
 static inline void cpuattn_scale_inplace(float *x, int64_t n, float scale) {

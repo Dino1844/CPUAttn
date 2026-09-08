@@ -184,11 +184,11 @@ Selection keys include the exact workload, complete Host fingerprint, compiler
 identity, selected backend, tuner configuration, and unordered legal candidate
 identities. `PlanBuilder` exposes the full legal plan space without predicting
 performance. The default `WorkerCountTuner` statically chooses one
-representative for each topology-derived worker count and measures at most six
-representatives once. Exact-workload cache hits bypass the tuner and execute
-only the recorded winner. Within one Runtime, immutable candidate plans,
-compiler identity, compiled artifacts, and loaded native kernels are retained
-for later calls of the same workload.
+representative for each topology-derived worker count and packing kind, and
+measures at most six representatives once. Exact-workload cache hits bypass the
+tuner and execute only the recorded winner. Within one Runtime, immutable
+candidate plans, compiler identity, compiled artifacts, and loaded native
+kernels are retained for later calls of the same workload.
 
 `SingleCoreTuner` is available when the target is kernel selection on one
 physical CPU rather than worker-count selection. It predicts a three-plan
