@@ -15,16 +15,17 @@ RUN apt-get update \
         python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-ENV VIRTUAL_ENV=/opt/venv
+ENV VIRTUAL_ENV=/home/vscode/.venv
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
-COPY requirements-container.txt /tmp/requirements-container.txt
-RUN python3 -m venv "${VIRTUAL_ENV}" \
-    && python -m pip install --no-cache-dir -r /tmp/requirements-container.txt \
-    && rm /tmp/requirements-container.txt \
-    && mkdir -p /home/vscode/.cache/cpuattn \
-    && chown -R vscode:vscode "${VIRTUAL_ENV}" /home/vscode/.cache/cpuattn
+COPY --chown=vscode:vscode requirements-container.txt /tmp/requirements-container.txt
+RUN mkdir -p /home/vscode/.cache/cpuattn \
+    && chown -R vscode:vscode /home/vscode/.cache/cpuattn
 
 USER vscode
+RUN python3 -m venv "${VIRTUAL_ENV}" \
+    && python -m pip install --no-cache-dir -r /tmp/requirements-container.txt \
+    && rm /tmp/requirements-container.txt
+
 WORKDIR /workspace
