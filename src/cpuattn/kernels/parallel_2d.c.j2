@@ -103,7 +103,9 @@ int cpuattn_run(
                 + (size_t)row * part_stride;
             for (int64_t dv = 0; dv < DV; ++dv) partial[dv] = 0.0f;
             float scores[TILE_K];
+{% if row_norm.kind != "softmax" %}
             float step_rescale[TILE_K];
+{% endif %}
 {% if row_norm.kind != "generic" %}
             float output_scale[1];
 {% endif %}

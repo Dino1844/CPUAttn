@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from ..hardware.host import Host, LogicalCpu
+from ..hardware.host import Host
 from ..core.operator import Linear, Operator, Parallel
 from .plan import (
     CodePlan,

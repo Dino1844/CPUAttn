@@ -66,6 +66,8 @@ class Backend:
                 (6 if lanes >= 16 else 4, 2),
                 (4 if lanes >= 16 else 2, 4),
             )
+            if lanes >= 16:
+                shapes = shapes + ((8, 2),)
             for tile_q, qk_vectors in shapes:
                 for multiplier in (1, 2):
                     for dv_multiplier in (1, 2):

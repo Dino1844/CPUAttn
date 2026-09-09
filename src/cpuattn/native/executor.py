@@ -15,23 +15,49 @@ class Executor:
     def __init__(self) -> None:
         self._arena: mmap.mmap | None = None
         self._arena_view: np.ndarray | None = None
-        self._arena_key: tuple[str, tuple[tuple[int, tuple[int, ...]], ...]] | None = None
+        self._arena_key: str | None = None
         self._prepared: set[tuple[str, tuple[int, ...]]] = set()
+        self._launch_arrays: dict[
+            str, tuple[np.ndarray, np.ndarray, np.ndarray]
+        ] = {}
 
     def _workspace_for(self, plan: ExecutionPlan) -> np.ndarray:
-        topology = tuple(
-            (group.numa_node, group.cpu_ids) for group in plan.launch.groups
-        )
-        key = (plan.memory.identity, topology)
-        if key != self._arena_key:
+        if plan.identity != self._arena_key:
             self.close()
             self._arena = mmap.mmap(-1, plan.memory.total_bytes, access=mmap.ACCESS_WRITE)
             self._arena_view = np.frombuffer(
                 self._arena, dtype=np.uint8, count=plan.memory.total_bytes
             )
-            self._arena_key = key
+            self._arena_key = plan.identity
         assert self._arena_view is not None
         return self._arena_view
+
+    def _launch_arrays_for(
+        self, plan: ExecutionPlan
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        arrays = self._launch_arrays.get(plan.identity)
+        if arrays is None:
+            group_by_cpu = {
+                cpu_id: group_index
+                for group_index, group in enumerate(plan.launch.groups)
+                for cpu_id in group.cpu_ids
+            }
+            worker_groups = np.asarray(
+                [group_by_cpu[cpu_id] for cpu_id in plan.launch.cpu_ids],
+                dtype=np.int32,
+            )
+            packed_region = next(
+                (region for region in plan.memory.regions if region.name == "packed_k"),
+                None,
+            )
+            packed_owners = np.asarray(
+                () if packed_region is None else packed_region.owner_groups,
+                dtype=np.int32,
+            )
+            cpu_ids = np.asarray(plan.launch.cpu_ids, dtype=np.int32)
+            arrays = (cpu_ids, worker_groups, packed_owners)
+            self._launch_arrays[plan.identity] = arrays
+        return arrays
 
     def close(self) -> None:
         self._arena_view = None
@@ -61,7 +87,7 @@ class Executor:
     ) -> TimedPlan:
         if kernel.compiled.code != plan.code:
             raise ValueError("compiled code and execution plan do not match")
-        cpu_ids = np.asarray(plan.launch.cpu_ids, dtype=np.int32)
+        cpu_ids, worker_groups, packed_owners = self._launch_arrays_for(plan)
         workspace = self._workspace_for(plan)
         elapsed = ctypes.c_uint64()
         if isinstance(call, ParallelCall):
@@ -72,23 +98,6 @@ class Executor:
             values = [call.q, call.k, call.v, output, *(value for _, value in call.arguments)]
             dimensions = (b, hq, hkv, sq, skv, d, dv)
             result_value: object = output
-            group_by_cpu = {
-                cpu_id: group_index
-                for group_index, group in enumerate(plan.launch.groups)
-                for cpu_id in group.cpu_ids
-            }
-            worker_groups = np.asarray(
-                [group_by_cpu[cpu_id] for cpu_id in plan.launch.cpu_ids],
-                dtype=np.int32,
-            )
-            packed_region = next(
-                (region for region in plan.memory.regions if region.name == "packed_k"),
-                None,
-            )
-            packed_owners = np.asarray(
-                () if packed_region is None else packed_region.owner_groups,
-                dtype=np.int32,
-            )
         else:
             assert isinstance(call, LinearCall)
             b, groups, sequence, d = call.q.shape

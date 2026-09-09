@@ -92,12 +92,15 @@ class Runtime:
                 workload_json,
             )
             self.last_selection = selection
-            event(
-                "selection complete mode=%s plan=%s latency_ns=%d",
-                selection.mode,
-                selection.winner.plan.identity[:12],
-                selection.winner.latency_ns,
-            )
+            # Cache-mode winners are replayed verbatim; logging every call
+            # would only duplicate the tune-time record.
+            if selection.mode == "tune":
+                event(
+                    "selection complete mode=%s plan=%s latency_ns=%d",
+                    selection.mode,
+                    selection.winner.plan.identity[:12],
+                    selection.winner.latency_ns,
+                )
             return selection.winner.result
 
     def _validated_call(

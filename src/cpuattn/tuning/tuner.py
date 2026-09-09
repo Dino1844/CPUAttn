@@ -74,7 +74,7 @@ class Tuner(ABC):
     """Own the tuning lifecycle while subclasses choose the next legal plan."""
 
     maxnum: int | None = None
-    repeat: int = 1
+    repeat: int = 3
 
     arch: ClassVar[str | None] = None
     pattern: ClassVar[str | None] = None
@@ -130,6 +130,9 @@ class Tuner(ABC):
                     break
                 samples_by_id[selected.identity] = []
                 measured_order.append(selected.identity)
+                # The first execution of a plan pays cold icache, first-touch
+                # faults, and frequency ramp; run it once outside the samples.
+                measure(legal)
             for _ in range(self.repeat):
                 latency = measure(legal)
                 if not isinstance(latency, int) or latency < 0:
@@ -182,18 +185,22 @@ def _history(
         Measurement(
             legal_by_id[identity],
             tuple(samples_by_id[identity]),
-            _median_ns(samples_by_id[identity]),
+            min(samples_by_id[identity]),
         )
         for identity in order
     )
 
 
-def _median_ns(samples: list[int]) -> int:
-    ordered = sorted(samples)
-    middle = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[middle]
-    return (ordered[middle - 1] + ordered[middle]) // 2
+def _shape(workload: Mapping[str, object]) -> dict[str, int]:
+    value = workload.get("shape")
+    if not isinstance(value, Mapping):
+        raise ValueError("workload description must contain a shape")
+    if not all(
+        isinstance(key, str) and isinstance(item, int)
+        for key, item in value.items()
+    ):
+        raise ValueError("workload shape must map axis names to integers")
+    return dict(value)
 
 
 def _freeze(value: object) -> object:

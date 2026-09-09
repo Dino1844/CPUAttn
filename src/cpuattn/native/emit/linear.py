@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Mapping
 
 from jinja2 import Environment
@@ -54,8 +55,8 @@ def render_linear(
         q_mod_simd=emit_simd_expr(operator.q_mod, q_vector_context),
         k_mod_simd=emit_simd_expr(operator.k_mod, q_vector_context),
         v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
-        transition_code=_linear_transition_code(operator, specs),
-        readout_code=_readout_code(operator, specs),
+        transition_code=_linear_transition_code(operator, specs, _DV_ALL),
+        readout_code=_readout_code(operator, specs, _DV_ALL),
         read_before=operator.readout.timing is transition.ReadTiming.BEFORE,
     )
 
@@ -120,8 +121,8 @@ def _render_2d(
         q_mod_simd=emit_simd_expr(operator.q_mod, q_vector_context),
         k_mod_simd=emit_simd_expr(operator.k_mod, q_vector_context),
         v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
-        transition_code=_linear_transition_code_2d(operator, specs),
-        readout_code=_readout_code_2d(operator, specs),
+        transition_code=_linear_transition_code(operator, specs, _DV_BLOCK),
+        readout_code=_readout_code(operator, specs, _DV_BLOCK),
         read_before=operator.readout.timing is transition.ReadTiming.BEFORE,
     )
 
@@ -177,70 +178,25 @@ def _transition_context(
     return context
 
 
+@dataclass(frozen=True)
+class _DvSlice:
+    """How generated code addresses the dv dimension of one lowering."""
+
+    suffix: str
+    span: str
+    dv_loop: str
+
+
+_DV_ALL = _DvSlice("", "DV", "for (int64_t dv = 0; dv < DV; ++dv)")
+_DV_BLOCK = _DvSlice(
+    " + dv_begin", "dv_count", "for (int64_t dv = dv_begin; dv < dv_end; ++dv)"
+)
+
+
 def _linear_transition_code(
-    operator: Linear, specs: Mapping[str, TensorArgSpec]
-) -> str:
-    lines: list[str] = []
-    for number, step in enumerate(operator.transition.steps):
-        if isinstance(step, transition.Scale):
-            factor = emit_expr(step.factor, _transition_context(specs, "d"))
-            lines.extend(
-                [
-                    "for (int64_t d = 0; d < D; ++d) {",
-                    f"    float factor_{number} = {factor};",
-                    f"    cpuattn_scale_inplace(state + state_base + d * DV, DV, factor_{number});",
-                    "}",
-                ]
-            )
-        elif isinstance(step, transition.Rank1):
-            left = emit_expr(step.left, _transition_context(specs, "d"))
-            right = emit_expr(step.right, _transition_context(specs, "d"))
-            lines.extend(
-                [
-                    "cpuattn_zero(linear_tmp, DV);",
-                    "for (int64_t d = 0; d < D; ++d) {",
-                    f"    float right_{number} = {right};",
-                    f"    cpuattn_axpy_inplace(linear_tmp, state + state_base + d * DV, DV, right_{number});",
-                    "}",
-                    "for (int64_t d = 0; d < D; ++d) {",
-                    f"    float left_{number} = {left};",
-                    f"    cpuattn_axpy_inplace(state + state_base + d * DV, linear_tmp, DV, left_{number});",
-                    "}",
-                ]
-            )
-        else:
-            left = emit_expr(step.left, _transition_context(specs, "d"))
-            right = emit_expr(step.right, _transition_context(specs, "dv"))
-            lines.extend(
-                [
-                    "for (int64_t dv = 0; dv < DV; ++dv)",
-                    f"    linear_tmp[dv] = {right};",
-                    "for (int64_t d = 0; d < D; ++d) {",
-                    f"    float left_{number} = {left};",
-                    f"    cpuattn_axpy_inplace(state + state_base + d * DV, linear_tmp, DV, left_{number});",
-                    "}",
-                ]
-            )
-    return "\n".join(lines)
-
-
-def _readout_code(operator: Linear, specs: Mapping[str, TensorArgSpec]) -> str:
-    query = emit_expr(operator.readout.query, _transition_context(specs, "d"))
-    return "\n".join(
-        [
-            "cpuattn_zero(output + output_base, DV);",
-            "for (int64_t d = 0; d < D; ++d) {",
-            f"    float query_value = {query};",
-            "    cpuattn_axpy_inplace(",
-            "        output + output_base, state + state_base + d * DV, DV, query_value);",
-            "}",
-        ]
-    )
-
-
-def _linear_transition_code_2d(
     operator: Linear,
     specs: Mapping[str, TensorArgSpec],
+    dv: _DvSlice,
 ) -> str:
     lines: list[str] = []
     for number, step in enumerate(operator.transition.steps):
@@ -250,8 +206,8 @@ def _linear_transition_code_2d(
                 [
                     "for (int64_t d = 0; d < D; ++d) {",
                     f"    float factor_{number} = {factor};",
-                    "    cpuattn_scale_inplace(state + state_base + d * DV + dv_begin,",
-                    f"        dv_count, factor_{number});",
+                    f"    cpuattn_scale_inplace(state + state_base + d * DV{dv.suffix},",
+                    f"        {dv.span}, factor_{number});",
                     "}",
                 ]
             )
@@ -260,17 +216,17 @@ def _linear_transition_code_2d(
             right = emit_expr(step.right, _transition_context(specs, "d"))
             lines.extend(
                 [
-                    "cpuattn_zero(linear_tmp + dv_begin, dv_count);",
+                    f"cpuattn_zero(linear_tmp{dv.suffix}, {dv.span});",
                     "for (int64_t d = 0; d < D; ++d) {",
                     f"    float right_{number} = {right};",
-                    "    cpuattn_axpy_inplace(linear_tmp + dv_begin,",
-                    "        state + state_base + d * DV + dv_begin, dv_count,",
+                    f"    cpuattn_axpy_inplace(linear_tmp{dv.suffix},",
+                    f"        state + state_base + d * DV{dv.suffix}, {dv.span},",
                     f"        right_{number});",
                     "}",
                     "for (int64_t d = 0; d < D; ++d) {",
                     f"    float left_{number} = {left};",
-                    "    cpuattn_axpy_inplace(state + state_base + d * DV + dv_begin,",
-                    f"        linear_tmp + dv_begin, dv_count, left_{number});",
+                    f"    cpuattn_axpy_inplace(state + state_base + d * DV{dv.suffix},",
+                    f"        linear_tmp{dv.suffix}, {dv.span}, left_{number});",
                     "}",
                 ]
             )
@@ -279,29 +235,31 @@ def _linear_transition_code_2d(
             right = emit_expr(step.right, _transition_context(specs, "dv"))
             lines.extend(
                 [
-                    "for (int64_t dv = dv_begin; dv < dv_end; ++dv)",
+                    dv.dv_loop,
                     f"    linear_tmp[dv] = {right};",
                     "for (int64_t d = 0; d < D; ++d) {",
                     f"    float left_{number} = {left};",
-                    "    cpuattn_axpy_inplace(state + state_base + d * DV + dv_begin,",
-                    f"        linear_tmp + dv_begin, dv_count, left_{number});",
+                    f"    cpuattn_axpy_inplace(state + state_base + d * DV{dv.suffix},",
+                    f"        linear_tmp{dv.suffix}, {dv.span}, left_{number});",
                     "}",
                 ]
             )
     return "\n".join(lines)
 
 
-def _readout_code_2d(
-    operator: Linear, specs: Mapping[str, TensorArgSpec]
+def _readout_code(
+    operator: Linear,
+    specs: Mapping[str, TensorArgSpec],
+    dv: _DvSlice,
 ) -> str:
     query = emit_expr(operator.readout.query, _transition_context(specs, "d"))
     return "\n".join(
         [
-            "cpuattn_zero(output + output_base + dv_begin, dv_count);",
+            f"cpuattn_zero(output + output_base{dv.suffix}, {dv.span});",
             "for (int64_t d = 0; d < D; ++d) {",
             f"    float query_value = {query};",
-            "    cpuattn_axpy_inplace(output + output_base + dv_begin,",
-            "        state + state_base + d * DV + dv_begin, dv_count, query_value);",
+            f"    cpuattn_axpy_inplace(output + output_base{dv.suffix},",
+            f"        state + state_base + d * DV{dv.suffix}, {dv.span}, query_value);",
             "}",
         ]
     )

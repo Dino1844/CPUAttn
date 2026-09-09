@@ -73,7 +73,10 @@ def test1(
     np.testing.assert_allclose(first, expected, rtol=2e-4, atol=2e-5)
     np.testing.assert_array_equal(replay, first)
     np.testing.assert_array_equal(second, first)
-    np.testing.assert_array_equal(third, first)
+    # Re-tuning after cache corruption may select a different plan; distinct
+    # kernels may differ at the ulp level from fp contraction, so only
+    # closeness is guaranteed for the third result.
+    np.testing.assert_allclose(third, first, rtol=2e-4, atol=2e-5)
     assert second_runtime.last_selection.mode == "cache"
     assert third_runtime.last_selection is not None
     assert third_runtime.last_selection.mode == "tune"

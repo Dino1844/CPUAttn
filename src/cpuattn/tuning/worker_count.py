@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ..schedule.plan import ExecutionPlan, LoweringKind, PackingKind
-from .tuner import Measurement, Tuner, TuningContext
+from .tuner import Measurement, Tuner, TuningContext, _shape
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,7 +12,7 @@ class WorkerCountTuner(Tuner):
     """Measure one statically chosen plan for each selected worker count."""
 
     maxnum: int | None = 6
-    version = 2
+    version = 5
 
     def choose_next(
         self,
@@ -102,10 +102,10 @@ def _plan_preference(
         code_key = (
             lowering,
             (code.packing is PackingKind.K_TRANSPOSED) != prefer_packed,
-            abs(code.tile.q - (6 if lanes >= 16 else 4)),
+            abs(code.tile.q - (8 if lanes >= 16 else 4)),
             abs(code.microkernel.qk_vectors - 2),
-            abs(code.tile.k - 2 * lanes),
-            abs(code.tile.dv - lanes),
+            abs(code.tile.k - ((4 if lanes >= 16 else 2) * lanes)),
+            abs(code.tile.dv - ((2 if lanes >= 16 else 1) * lanes)),
         )
     else:
         lowering = {
@@ -132,18 +132,6 @@ def _plan_preference(
         plan.launch.cpu_ids,
     )
     return (*code_key, *placement_key, plan.identity)
-
-
-def _shape(workload: Mapping[str, object]) -> dict[str, int]:
-    value = workload.get("shape")
-    if not isinstance(value, Mapping):
-        raise ValueError("workload description must contain a shape")
-    if not all(
-        isinstance(key, str) and isinstance(item, int)
-        for key, item in value.items()
-    ):
-        raise ValueError("workload shape must map axis names to integers")
-    return dict(value)
 
 
 def _is_power_of_two(value: int) -> bool:

@@ -28,6 +28,13 @@ class Axis(str, Enum):
     DV = "dv"
 
 
+def _require_identifier_axes(kind: str, identifier: str, axes: tuple[Axis, ...]) -> None:
+    if not identifier or not identifier.isidentifier():
+        raise ValueError(f"invalid {kind} {identifier!r}")
+    if len(set(axes)) != len(axes):
+        raise ValueError(f"{kind} {identifier!r} repeats a logical axis")
+
+
 @dataclass(frozen=True, slots=True)
 class TensorSpec:
     role: str
@@ -39,10 +46,7 @@ class TensorSpec:
     contiguous: bool = True
 
     def __post_init__(self) -> None:
-        if not self.role or not self.role.isidentifier():
-            raise ValueError(f"invalid tensor role {self.role!r}")
-        if len(set(self.axes)) != len(self.axes):
-            raise ValueError(f"tensor {self.role!r} repeats a logical axis")
+        _require_identifier_axes("tensor role", self.role, self.axes)
 
     def canonical(self) -> dict[str, object]:
         return {
@@ -64,10 +68,7 @@ class TensorArgSpec:
     contiguous: bool = True
 
     def __post_init__(self) -> None:
-        if not self.name or not self.name.isidentifier():
-            raise ValueError(f"invalid argument name {self.name!r}")
-        if len(set(self.axes)) != len(self.axes):
-            raise ValueError(f"argument {self.name!r} repeats a logical axis")
+        _require_identifier_axes("argument name", self.name, self.axes)
 
     def canonical(self) -> dict[str, object]:
         return {

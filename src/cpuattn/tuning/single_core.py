@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from ..hardware.host import Host
 from ..schedule.plan import ExecutionPlan, LoweringKind, PackingKind
-from .tuner import Measurement, Tuner, TuningContext
+from .tuner import Measurement, Tuner, TuningContext, _shape
 
 
 _FP32_BYTES = 4
@@ -204,16 +204,6 @@ def _bandwidth(
         4,
     )
     return max(8.0, vector_bytes * {1: 2.0, 2: 1.0, 3: 0.5}.get(level, 0.25))
-
-
-def _shape(workload: Mapping[str, object]) -> dict[str, int]:
-    shape = workload.get("shape")
-    if not isinstance(shape, Mapping) or not all(
-        isinstance(key, str) and isinstance(value, int)
-        for key, value in shape.items()
-    ):
-        raise ValueError("workload description must contain an integer shape")
-    return dict(shape)
 
 
 def _round_up(value: int, multiple: int) -> int:
