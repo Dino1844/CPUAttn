@@ -84,3 +84,42 @@ def test4() -> None:
             v=f32((1, 2, 7, 9)),
             arguments={"scale": f32((3, 4))},
         )
+
+
+def test5() -> None:
+    """K/V accept prefix views of a preallocated cache and report head strides."""
+    operator = Parallel()
+    k_cache, v_cache = f32((1, 2, 16, 5)), f32((1, 2, 16, 9))
+    call = validate_parallel_call(
+        operator, q=f32((1, 4, 3, 5)), k=k_cache[:, :, :7], v=v_cache[:, :, :7]
+    )
+    assert call.k_pitch == 16 * 5
+    assert call.v_pitch == 16 * 9
+    dense = validate_parallel_call(
+        operator, q=f32((1, 4, 3, 5)), k=f32((1, 2, 7, 5)), v=f32((1, 2, 7, 9))
+    )
+    assert dense.k_pitch == 7 * 5
+    assert dense.v_pitch == 7 * 9
+
+
+def test6() -> None:
+    """Panels must be row-contiguous head slabs of a larger buffer."""
+    operator = Parallel()
+    q, k, v = f32((1, 4, 3, 5)), f32((1, 2, 7, 5)), f32((1, 2, 7, 9))
+    validate_parallel_call(operator, q=q, k=k, v=v)
+    with pytest.raises(ValueError, match="prefix view"):
+        validate_parallel_call(operator, q=q, k=k[:, :, ::-1], v=v)
+    with pytest.raises(ValueError, match="fp32"):
+        validate_parallel_call(
+            operator, q=q, k=k.astype(np.float64), v=v.astype(np.float64)
+        )
+    with pytest.raises(ValueError, match="rank 4"):
+        validate_parallel_call(operator, q=q, k=k[0], v=v)
+    with pytest.raises(ValueError, match="positive"):
+        validate_parallel_call(operator, q=q, k=f32((1, 2, 0, 5)), v=f32((1, 2, 0, 9)))
+    # Overlapping heads: the head stride is smaller than the logical span.
+    cramped = np.lib.stride_tricks.as_strided(
+        f32(64), shape=(1, 2, 7, 5), strides=(4, 8, 20, 4)
+    )
+    with pytest.raises(ValueError, match="prefix view"):
+        validate_parallel_call(operator, q=q, k=cramped, v=v)

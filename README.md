@@ -82,8 +82,15 @@ output = runtime.run(
 
 K/V remain caller-owned and read-only. `kv_cache=True` describes short-query
 cache-backed semantics; Q is interpreted as the suffix of K/V, so positional
-expressions see query indices starting at `SKV - SQ`. It does not retain an
-internal packed K across calls.
+expressions see query indices starting at `SKV - SQ`. Passing K/V as prefix
+views of a preallocated cache (`buffer[:, :, :length]`) is supported and
+zero-copy. Consecutive calls that grow the same K buffer are treated as one
+decode stream: the transposed-K pack then re-packs only the grown suffix each
+step instead of the whole cache. A changed buffer, a length that shrinks, a
+same-length re-run, or an intervening run on another stream falls back to a
+full pack. The stream contract is append-only: rows already covered by the
+packed prefix must not be edited in place while the length later grows, or
+the stale prefix is reused.
 
 ## Linear example
 

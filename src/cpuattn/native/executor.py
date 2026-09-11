@@ -108,9 +108,12 @@ class Executor:
             _, hkv, skv, _ = call.k.shape
             dv = call.v.shape[3]
             dimensions = (b, hq, hkv, sq, skv, d, dv)
-            # Per-call slot: baking it into the source would make one artifact per length.
+            # Per-call slots: baking them into the source would make one artifact per length.
             offset_slot = ctypes.c_int64()
             arguments.append(offset_slot)
+            arguments.append(ctypes.c_int64())
+            arguments.append(ctypes.c_int64())
+            arguments.append(ctypes.c_int64())
         else:
             b, groups, sequence, d = call.q.shape
             heads = call.v.shape[1]
@@ -139,7 +142,7 @@ class Executor:
         arguments.append(ctypes.byref(elapsed))
         kernel._execute.argtypes = (
             [ctypes.c_void_p] * pointer_count
-            + [ctypes.c_int64] * (len(dimensions) + (1 if parallel else 0))
+            + [ctypes.c_int64] * (len(dimensions) + (4 if parallel else 0))
             + [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_int]
             + (
                 [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
@@ -157,6 +160,7 @@ class Executor:
         kernel: NativeKernel,
         plan: ExecutionPlan,
         call: ValidatedCall,
+        packed_prefix: int = 0,
     ) -> TimedPlan:
         if kernel.compiled.code != plan.code:
             raise ValueError("compiled code and execution plan do not match")
@@ -195,7 +199,19 @@ class Executor:
             b, hq, sq, d = call.q.shape
             _, hkv, skv, _ = call.k.shape
             dv = call.v.shape[3]
-            dims = (call.query_offset, b, hq, hkv, sq, skv, d, dv)
+            dims = (
+                call.query_offset,
+                packed_prefix,
+                call.k_pitch or skv * d,
+                call.v_pitch or skv * dv,
+                b,
+                hq,
+                hkv,
+                sq,
+                skv,
+                d,
+                dv,
+            )
         else:
             assert isinstance(call, LinearCall)
             dims = (b, groups, heads, sequence, d, dv)

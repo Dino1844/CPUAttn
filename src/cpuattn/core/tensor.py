@@ -100,4 +100,40 @@ def require_array(value: Any, *, name: str, rank: int) -> np.ndarray:
     return array
 
 
+def require_panel(value: Any, *, name: str, rank: int) -> tuple[np.ndarray, int]:
+    """Like require_array but also accepts a prefix view of a larger cache.
+
+    A cache-backed sequence grows inside a preallocated buffer, so K/V arrive
+    as `buffer[:, :, :length]`: rows stay contiguous while the head stride
+    exceeds the logical span. Returns the view and the head stride in
+    elements (the kernel's per-head base step); fully contiguous input
+    yields the natural head stride.
+    """
+    array = value
+    if not isinstance(array, np.ndarray) and hasattr(array, "detach"):
+        device = getattr(array, "device", None)
+        if device is not None and getattr(device, "type", str(device)) != "cpu":
+            raise ValueError(f"{name} must be a CPU tensor")
+        array = array.detach().numpy()
+    if not isinstance(array, np.ndarray):
+        raise ValueError(f"{name} must be a NumPy array or contiguous CPU tensor")
+    if array.ndim != rank:
+        raise ValueError(f"{name} must have rank {rank}; got shape {array.shape}")
+    if array.dtype != np.float32:
+        raise ValueError(f"{name} must use fp32 storage; got {array.dtype}")
+    if 0 in array.shape:
+        raise ValueError(f"{name} dimensions must be positive; got {array.shape}")
+    b, h, s, d = array.shape
+    item = array.itemsize
+    s0, s1, s2, s3 = array.strides
+    if s3 == item and s2 == d * item:
+        pitch = s1 // item
+        if s1 == pitch * item and pitch >= s and s0 == h * pitch * item:
+            return array, pitch
+    raise ValueError(
+        f"{name} must be contiguous BHSD storage or a prefix view of one; "
+        f"got shape {array.shape} with strides {array.strides}"
+    )
+
+
 __all__ = ["Axis", "DType", "Layout", "TensorArgSpec", "TensorSpec"]

@@ -25,6 +25,8 @@ int cpuattn_run(
     float *restrict output{% for argument in arguments %},
     const float *restrict arg_{{ argument.name }}{% endfor %},
     int64_t query_offset,
+    int64_t packed_prefix,
+    int64_t k_pitch, int64_t v_pitch,
     int64_t B, int64_t HQ, int64_t HKV, int64_t SQ,
     int64_t SKV, int64_t D, int64_t DV,
     void *restrict raw_workspace, size_t workspace_bytes,
@@ -87,7 +89,7 @@ int cpuattn_run(
 
 {% if code.packing.value == "k_transposed" %}
         cpuattn_pack_k_for_owner(
-            k, packed_k, packed_copy_bytes, B, HKV, SKV, D, packed_skv,
+            k, packed_k, packed_copy_bytes, B, HKV, SKV, D, packed_skv, packed_prefix, k_pitch,
             worker_groups, workers, packed_owner_groups, packed_owner_count);
         #pragma omp barrier
 {% endif %}
@@ -110,7 +112,7 @@ int cpuattn_run(
                 + (size_t)packed_slot * packed_copy_bytes)
                 + (b * HKV + hkv) * D * packed_skv;
 {% else %}
-            const float *direct_head = k + (b * HKV + hkv) * SKV * D;
+            const float *direct_head = k + (b * HKV + hkv) * k_pitch;
 {% endif %}
             float *partial = (float *)(workspace + (size_t)worker * worker_stride)
                 + (size_t)row * part_stride;
@@ -205,7 +207,7 @@ int cpuattn_run(
                 cpuattn_scale_inplace(partial, DV, suffix);
 {% endif %}
                 cpuattn_pv_tile(
-                    scores, v + ((b * HKV + hkv) * SKV + kb) * DV,
+                    scores, v + (b * HKV + hkv) * v_pitch + kb * DV,
                     partial, DV, n_valid, 1);
             }
 {% for state in row_norm.states %}
@@ -302,6 +304,8 @@ int cpuattn_execute(
     float *restrict output{% for argument in arguments %},
     const float *restrict arg_{{ argument.name }}{% endfor %},
     int64_t query_offset,
+    int64_t packed_prefix,
+    int64_t k_pitch, int64_t v_pitch,
     int64_t B, int64_t HQ, int64_t HKV, int64_t SQ,
     int64_t SKV, int64_t D, int64_t DV,
     void *restrict workspace, size_t workspace_bytes,
@@ -313,7 +317,7 @@ int cpuattn_execute(
     uint64_t begin = cpuattn_now_ns();
     int status = cpuattn_run(
         q, k, v, output{% for argument in arguments %}, arg_{{ argument.name }}{% endfor %},
-        query_offset, B, HQ, HKV, SQ, SKV, D, DV, workspace, workspace_bytes,
+        query_offset, packed_prefix, k_pitch, v_pitch, B, HQ, HKV, SQ, SKV, D, DV, workspace, workspace_bytes,
         cpu_ids, workers, worker_groups, group_count,
         packed_owner_groups, packed_owner_count);
     *elapsed_ns = cpuattn_now_ns() - begin;

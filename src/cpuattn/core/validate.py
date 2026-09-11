@@ -7,7 +7,7 @@ import numpy as np
 
 from .expr import ValueType
 from .operator import Linear, Operator, Parallel
-from .tensor import Axis, TensorArgSpec, require_array
+from .tensor import Axis, TensorArgSpec, require_array, require_panel
 
 
 _RESERVED_ARGUMENTS = {
@@ -28,6 +28,8 @@ class ParallelCall:
     v: np.ndarray
     arguments: tuple[tuple[str, np.ndarray], ...]
     kv_cache: bool
+    k_pitch: int = 0
+    v_pitch: int = 0
 
     @property
     def argument_map(self) -> dict[str, np.ndarray]:
@@ -182,8 +184,8 @@ def validate_parallel_call(
 ) -> ParallelCall:
     validate_definition(operator)
     q_array = require_array(q, name="q", rank=4)
-    k_array = require_array(k, name="k", rank=4)
-    v_array = require_array(v, name="v", rank=4)
+    k_array, k_pitch = require_panel(k, name="k", rank=4)
+    v_array, v_pitch = require_panel(v, name="v", rank=4)
     b, query_heads, _, d = q_array.shape
     kb, kv_heads, key_length, kd = k_array.shape
     vb, value_heads, value_length, _ = v_array.shape
@@ -209,7 +211,9 @@ def validate_parallel_call(
         Axis.DV: v_array.shape[3],
     }
     bound = _validate_arguments(operator.arguments, arguments, dims)
-    return ParallelCall(q_array, k_array, v_array, bound, bool(kv_cache))
+    return ParallelCall(
+        q_array, k_array, v_array, bound, bool(kv_cache), k_pitch, v_pitch
+    )
 
 
 def validate_linear_call(

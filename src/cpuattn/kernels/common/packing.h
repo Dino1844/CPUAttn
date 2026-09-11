@@ -27,6 +27,8 @@ static inline void cpuattn_pack_k_for_owner(
     int64_t SKV,
     int64_t D,
     int64_t packed_skv,
+    int64_t packed_prefix,
+    int64_t k_pitch,
     const int *worker_groups,
     int workers,
     const int *owner_groups,
@@ -50,9 +52,10 @@ static inline void cpuattn_pack_k_for_owner(
         int64_t d = panel % D;
         int64_t hkv = (panel / D) % HKV;
         int64_t b = panel / (D * HKV);
-        const float *source = k + ((b * HKV + hkv) * SKV) * D + d;
+        const float *source = k + (b * HKV + hkv) * k_pitch + d;
         float *target = copy + ((b * HKV + hkv) * D + d) * packed_skv;
-        int64_t ki = 0;
+        /* Only rows above packed_prefix are packed; earlier rows persist in the workspace. */
+        int64_t ki = packed_prefix;
         for (; ki < SKV; ++ki) target[ki] = source[ki * D];
         for (; ki < packed_skv; ++ki) target[ki] = 0.0f;
     }
