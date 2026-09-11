@@ -32,11 +32,15 @@ int cpuattn_run(
     int64_t dv_blocks = (DV + TILE_DV - 1) / TILE_DV;
     int64_t work_items = B * H * dv_blocks;
 
-    #pragma omp parallel num_threads(workers) reduction(|:affinity_error)
+    #pragma omp parallel num_threads(workers) if(workers > 1) reduction(|:affinity_error)
     {
         cpuattn_affinity_state original_affinity;
-        affinity_error |= omp_get_num_threads() != workers;
-        affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
+        /* workers == 1 deactivates the region: serial execution, no team spawn. */
+        int pinned = workers > 1;
+        if (pinned) {
+            affinity_error |= omp_get_num_threads() != workers;
+            affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
+        }
         float *qv = (float *)((unsigned char *)raw_workspace
             + (size_t)omp_get_thread_num() * scratch_stride);
         float *kv = qv + D;
@@ -92,7 +96,8 @@ int cpuattn_run(
 {% endif %}
             }
         }
-        affinity_error |= cpuattn_restore_worker(&original_affinity) != 0;
+        if (pinned)
+            affinity_error |= cpuattn_restore_worker(&original_affinity) != 0;
     }
     return affinity_error ? 1 : 0;
 }

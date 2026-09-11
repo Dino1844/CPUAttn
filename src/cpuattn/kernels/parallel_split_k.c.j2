@@ -25,6 +25,7 @@ int cpuattn_run(
     const float *restrict v,
     float *restrict output{% for argument in arguments %},
     const float *restrict arg_{{ argument.name }}{% endfor %},
+    int64_t query_offset,
     int64_t B, int64_t HQ, int64_t HKV, int64_t SQ,
     int64_t SKV, int64_t D, int64_t DV,
     void *restrict raw_workspace, size_t workspace_bytes,
@@ -58,11 +59,15 @@ int cpuattn_run(
     unsigned char *workspace = (unsigned char *)raw_workspace + packed_bytes;
 
     int affinity_error = 0;
-    #pragma omp parallel num_threads(workers) reduction(|:affinity_error)
+    #pragma omp parallel num_threads(workers) if(workers > 1) reduction(|:affinity_error)
     {
         cpuattn_affinity_state original_affinity;
-        affinity_error |= omp_get_num_threads() != workers;
-        affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
+        /* workers == 1 deactivates the region: serial execution, no team spawn. */
+        int pinned = workers > 1;
+        if (pinned) {
+            affinity_error |= omp_get_num_threads() != workers;
+            affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
+        }
 
 {% if code.packing.value == "k_transposed" %}
         cpuattn_pack_k_for_owner(
@@ -280,7 +285,8 @@ int cpuattn_run(
             float final_scale = {{ row_norm.final_scale_c }};
             cpuattn_scale_inplace(output + output_base, DV, final_scale);
         }
-        affinity_error |= cpuattn_restore_worker(&original_affinity) != 0;
+        if (pinned)
+            affinity_error |= cpuattn_restore_worker(&original_affinity) != 0;
     }
 
     return affinity_error ? 1 : 0;
@@ -292,6 +298,7 @@ int cpuattn_execute(
     const float *restrict v,
     float *restrict output{% for argument in arguments %},
     const float *restrict arg_{{ argument.name }}{% endfor %},
+    int64_t query_offset,
     int64_t B, int64_t HQ, int64_t HKV, int64_t SQ,
     int64_t SKV, int64_t D, int64_t DV,
     void *restrict workspace, size_t workspace_bytes,
@@ -303,7 +310,7 @@ int cpuattn_execute(
     uint64_t begin = cpuattn_now_ns();
     int status = cpuattn_run(
         q, k, v, output{% for argument in arguments %}, arg_{{ argument.name }}{% endfor %},
-        B, HQ, HKV, SQ, SKV, D, DV, workspace, workspace_bytes,
+        query_offset, B, HQ, HKV, SQ, SKV, D, DV, workspace, workspace_bytes,
         cpu_ids, workers, worker_groups, group_count,
         packed_owner_groups, packed_owner_count);
     *elapsed_ns = cpuattn_now_ns() - begin;

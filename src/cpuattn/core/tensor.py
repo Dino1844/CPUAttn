@@ -95,7 +95,7 @@ def require_array(value: Any, *, name: str, rank: int) -> np.ndarray:
         raise ValueError(f"{name} must use fp32 storage; got {array.dtype}")
     if not array.flags.c_contiguous:
         raise ValueError(f"{name} must be contiguous BHSD storage")
-    if any(size <= 0 for size in array.shape):
+    if 0 in array.shape:
         raise ValueError(f"{name} dimensions must be positive; got {array.shape}")
     return array
 

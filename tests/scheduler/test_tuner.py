@@ -174,8 +174,8 @@ def test1() -> None:
     """The base class owns budget, repeat, history, and winner selection."""
     plans = tuple(_plan(workers) for workers in range(1, 5))
     samples = {
-        plans[0].identity: iter((0, 90, 80, 100)),
-        plans[1].identity: iter((0, 50, 60, 40)),
+        plans[0].identity: iter((0, 90, 80, 100, 90, 90)),
+        plans[1].identity: iter((0, 50, 60, 40, 50, 50)),
         plans[2].identity: iter((1, 1, 1)),
         plans[3].identity: iter((1, 1, 1)),
     }
@@ -188,11 +188,16 @@ def test1() -> None:
     result = OrderedTuner(maxnum=2, repeat=3).select(_context(plans), measure)
 
     assert result.winner == plans[1]
-    assert calls == [plans[0].identity] * 4 + [plans[1].identity] * 4
-    assert tuple(item.latency_ns for item in result.measurements) == (80, 40)
+    assert calls == [plans[0].identity] * 4 + [plans[1].identity] * 4 + [
+        plans[1].identity,
+        plans[0].identity,
+        plans[1].identity,
+        plans[0].identity,
+    ]
+    assert tuple(item.latency_ns for item in result.measurements) == (90, 50)
     assert tuple(item.samples_ns for item in result.measurements) == (
-        (90, 80, 100),
-        (50, 60, 40),
+        (90, 80, 100, 90, 90),
+        (50, 60, 40, 50, 50),
     )
 
     values = iter((0, 20, 10))
@@ -251,7 +256,7 @@ def test3() -> None:
         _context(tuple(reversed(plans))), measure
     )
 
-    assert len(calls) == 12
+    assert len(calls) == 16
     assert len({plan.launch.workers for plan in calls}) == 6
     assert all(plan.code.tile.q == 4 for plan in calls)
     assert result.winner.launch.workers == max(
@@ -297,12 +302,15 @@ def test4() -> None:
         measure,
     )
 
-    assert len(calls) == 8
+    assert len(calls) == 12
     assert all(plan.launch.cpu_ids == (0,) for plan in calls)
     expected_ids = [item.plan.identity for item in predictions[:4]]
+    # The tail is the interleaved confirmation of the two best finalists
+    # (packed q=4 scores 10, packed q=6 scores 12).
+    leader, runner = expected_ids[3], expected_ids[1]
     assert [plan.identity for plan in calls] == [
         identity for identity in expected_ids for _ in range(2)
-    ]
+    ] + [leader, runner, leader, runner]
     assert all(item.predicted_cycles > 0 for item in predictions)
     assert all(item.arithmetic_intensity > 0 for item in predictions)
     assert list(predictions) == sorted(
@@ -316,14 +324,14 @@ def test4() -> None:
         context,
         lambda plan: default_calls.append(plan) or 1,
     )
-    assert len(default_calls) == 6
+    assert len(default_calls) == 10
 
     exhaustive: list[ExecutionPlan] = []
     SingleCoreTuner(maxnum=None, repeat=1).select(
         _context(plans),
         lambda plan: exhaustive.append(plan) or 1,
     )
-    assert len(exhaustive) == 12
+    assert len(exhaustive) == 16
     assert all(plan.launch.cpu_ids == (0,) for plan in exhaustive)
 
 def test5() -> None:
@@ -400,3 +408,26 @@ def test6() -> None:
         return estimate.compute_cycles
 
     assert packed_compute_cycles(9) <= packed_compute_cycles(16)
+
+
+def test7() -> None:
+    """Interleaved confirmation overrides a burst-dominated first ranking."""
+    plans = (_plan(26), _plan(52))
+    # Plan A is intrinsically faster, but its initial samples all fell inside
+    # one load burst; the interleaved confirmation round recovers it.
+    samples = {
+        plans[0].identity: iter((0, 10, 100, 100, 10, 10)),
+        plans[1].identity: iter((0, 50, 50, 50, 50, 50)),
+    }
+
+    def measure(plan):
+        return next(samples[plan.identity])
+
+    result = OrderedTuner(maxnum=None, repeat=3).select(_context(plans), measure)
+
+    assert result.winner == plans[0]
+    assert tuple(item.latency_ns for item in result.measurements) == (10, 50)
+    assert tuple(item.samples_ns for item in result.measurements) == (
+        (10, 100, 100, 10, 10),
+        (50, 50, 50, 50, 50),
+    )

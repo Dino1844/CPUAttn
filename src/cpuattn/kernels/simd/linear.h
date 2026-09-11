@@ -98,4 +98,33 @@ static inline void cpuattn_linear_values_block(
     }
 }
 
+static inline void cpuattn_state_update_block(
+    float *restrict state,
+    const float *restrict v_block,
+    const float *restrict k_block,
+    const float *restrict suffix,
+    int64_t d_size,
+    int64_t dv_size,
+    int rows,
+    float block_scale) {
+    for (int64_t d = 0; d < d_size; ++d) {
+        float *row = state + d * dv_size;
+        for (int64_t dv = 0; dv < dv_size; dv += CPUATTN_SIMD_LANES) {
+            int width = (int)(dv_size - dv < CPUATTN_SIMD_LANES
+                ? dv_size - dv : CPUATTN_SIMD_LANES);
+            cpuattn_simd_t acc = cpuattn_simd_mul(
+                cpuattn_simd_load_partial(row + dv, width),
+                cpuattn_simd_set1(block_scale));
+            for (int j = 0; j < rows; ++j) {
+                acc = cpuattn_simd_fma(
+                    k_block[(int64_t)j * d_size + d] * suffix[j],
+                    cpuattn_simd_load_partial(
+                        v_block + (int64_t)j * dv_size + dv, width),
+                    acc);
+            }
+            cpuattn_simd_store_partial(row + dv, acc, width);
+        }
+    }
+}
+
 #endif

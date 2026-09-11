@@ -12,7 +12,7 @@ class WorkerCountTuner(Tuner):
     """Measure one statically chosen plan for each selected worker count."""
 
     maxnum: int | None = 6
-    version = 5
+    version = 6
 
     def choose_next(
         self,

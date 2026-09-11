@@ -34,11 +34,15 @@ int cpuattn_run(
 
     int affinity_error = 0;
     int64_t rows = B * H;
-    #pragma omp parallel num_threads(workers) reduction(|:affinity_error)
+    #pragma omp parallel num_threads(workers) if(workers > 1) reduction(|:affinity_error)
     {
         cpuattn_affinity_state original_affinity;
-        affinity_error |= omp_get_num_threads() != workers;
-        affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
+        /* workers == 1 deactivates the region: serial execution, no team spawn. */
+        int pinned = workers > 1;
+        if (pinned) {
+            affinity_error |= omp_get_num_threads() != workers;
+            affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
+        }
         float *scratch = (float *)((unsigned char *)raw_workspace
             + (size_t)omp_get_thread_num() * scratch_stride);
         float *q_block = scratch;
@@ -134,20 +138,19 @@ int cpuattn_run(
                         DV);
                 }
 
-                for (int64_t d = 0; d < D; ++d)
-                    cpuattn_scale_inplace(
-                        state + state_base + d * DV, DV, block_scale);
-                for (int j = 0; j < valid; ++j) {
-                    for (int64_t d = 0; d < D; ++d)
-                        cpuattn_axpy_inplace(
-                            state + state_base + d * DV,
-                            v_block + (int64_t)j * DV,
-                            DV,
-                            k_block[(int64_t)j * D + d] * suffix[j]);
-                }
+                cpuattn_state_update_block(
+                    state + state_base,
+                    v_block,
+                    k_block,
+                    suffix,
+                    D,
+                    DV,
+                    valid,
+                    block_scale);
             }
         }
-        affinity_error |= cpuattn_restore_worker(&original_affinity) != 0;
+        if (pinned)
+            affinity_error |= cpuattn_restore_worker(&original_affinity) != 0;
     }
     return affinity_error ? 1 : 0;
 }

@@ -103,8 +103,13 @@ class LinearCall:
 
 ValidatedCall = ParallelCall | LinearCall
 
+_DEFINITION_VERIFIED: set[str] = set()
+
 
 def validate_definition(operator: Operator) -> None:
+    # Operators are immutable and fingerprinted, so validating once is enough.
+    if operator.fingerprint in _DEFINITION_VERIFIED:
+        return
     argument_names = {item.name for item in operator.arguments}
     conflict = argument_names & _RESERVED_ARGUMENTS
     if conflict:
@@ -163,6 +168,7 @@ def validate_definition(operator: Operator) -> None:
                 f"argument {argument.name!r} uses axes unavailable to "
                 f"{operator.pattern}: {sorted(axis.value for axis in unsupported)}"
             )
+    _DEFINITION_VERIFIED.add(operator.fingerprint)
 
 
 def validate_parallel_call(

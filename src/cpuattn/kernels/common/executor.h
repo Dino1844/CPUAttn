@@ -1,6 +1,7 @@
 #ifndef MINI_CPUATTN_EXECUTOR_H
 #define MINI_CPUATTN_EXECUTOR_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 #include <unistd.h>

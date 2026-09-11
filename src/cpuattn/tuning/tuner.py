@@ -13,6 +13,9 @@ from ..schedule.plan import ExecutionPlan, TimedPlan
 
 Measure = Callable[[ExecutionPlan], int]
 
+_CONFIRM_FINALISTS = 2
+_CONFIRM_ROUNDS = 2
+
 
 @dataclass(frozen=True, slots=True)
 class TuningContext:
@@ -134,10 +137,9 @@ class Tuner(ABC):
                 # faults, and frequency ramp; run it once outside the samples.
                 measure(legal)
             for _ in range(self.repeat):
-                latency = measure(legal)
-                if not isinstance(latency, int) or latency < 0:
-                    raise ValueError("measure must return a non-negative integer")
-                samples_by_id[selected.identity].append(latency)
+                _sample(legal, measure, samples_by_id)
+
+        self._confirm_finalists(legal_by_id, samples_by_id, measure)
 
         measurements = _history(measured_order, legal_by_id, samples_by_id)
         if not measurements:
@@ -147,6 +149,26 @@ class Tuner(ABC):
             key=lambda item: (item.latency_ns, item.plan.identity),
         ).plan
         return TuningResult(winner, measurements)
+
+    def _confirm_finalists(
+        self,
+        legal_by_id: dict[str, ExecutionPlan],
+        samples_by_id: dict[str, list[int]],
+        measure: Measure,
+    ) -> None:
+        """Re-measure the top plans interleaved so a transient burst cannot pick the winner."""
+        if len(samples_by_id) < _CONFIRM_FINALISTS:
+            return
+        ranked = sorted(
+            samples_by_id,
+            key=lambda identity: (
+                _median_sample(samples_by_id[identity]),
+                identity,
+            ),
+        )[:_CONFIRM_FINALISTS]
+        for _ in range(_CONFIRM_ROUNDS):
+            for identity in ranked:
+                _sample(legal_by_id[identity], measure, samples_by_id)
 
     def _validate_context(self, context: TuningContext) -> None:
         if not context.candidates:
@@ -185,10 +207,27 @@ def _history(
         Measurement(
             legal_by_id[identity],
             tuple(samples_by_id[identity]),
-            min(samples_by_id[identity]),
+            _median_sample(samples_by_id[identity]),
         )
         for identity in order
     )
+
+
+def _median_sample(samples: list[int]) -> int:
+    """Median (lower middle for even counts); robust to one bad sample."""
+    ordered = sorted(samples)
+    return ordered[(len(ordered) - 1) // 2]
+
+
+def _sample(
+    plan: ExecutionPlan,
+    measure: Measure,
+    samples_by_id: dict[str, list[int]],
+) -> None:
+    latency = measure(plan)
+    if not isinstance(latency, int) or latency < 0:
+        raise ValueError("measure must return a non-negative integer")
+    samples_by_id[plan.identity].append(latency)
 
 
 def _shape(workload: Mapping[str, object]) -> dict[str, int]:

@@ -25,7 +25,7 @@ def render_parallel(
     code: CodePlan,
 ) -> str:
     argument_map = parallel_argument_map(operator.arguments)
-    query_index = f"(qi + {call.query_offset})"
+    query_index = "(qi + query_offset)"
     base = {
         "x": "raw_score",
         "query_index": f"((float){query_index})",
@@ -127,7 +127,7 @@ def render_parallel(
         score_expr_simd=emit_simd_expr(operator.score_mod, vector_base),
         mask_expr_simd=emit_simd_expr(operator.mask_mod, vector_base),
         causal_block_limit=_implies_causality(operator.mask_mod),
-        query_offset=call.query_offset,
+        query_offset="query_offset",
         row_norm=row_norm,
     )
 

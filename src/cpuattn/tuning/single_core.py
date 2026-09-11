@@ -10,10 +10,16 @@ from .tuner import Measurement, Tuner, TuningContext, _shape
 
 _FP32_BYTES = 4
 
+_HORIZONTAL_REDUCE_CYCLES = 0.5
+
 
 @dataclass(frozen=True, slots=True)
 class SingleCoreEstimate:
-    """Small roofline report used to explain and order a tile search."""
+    """Small roofline report used to explain and order a tile search.
+
+    compute_cycles includes the horizontal-reduce tax of direct QK
+    lowerings; packing_cycles includes the read+write memory traffic of
+    the transposed copy, not just its arithmetic."""
 
     plan: ExecutionPlan
     predicted_cycles: float
@@ -35,6 +41,8 @@ class _Work:
     working_set_bytes: int
     fma_chains: int
     register_vectors: int
+    horizontal_cycles: float = 0.0
+    packing_bytes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +50,7 @@ class SingleCoreTuner(Tuner):
     """Predict a small tile shortlist on one physical CPU, then measure it."""
 
     maxnum: int | None = 3
+    version = 3
 
     def choose_next(
         self,
@@ -103,12 +112,17 @@ def _estimate(
     lanes = vector_bytes // _FP32_BYTES
     fma_pipes = 2 if context.host.features & {"fma", "asimd", "sve"} else 1
     peak_flops = 2 * lanes * fma_pipes
-    utilization = min(1.0, work.fma_chains / 4)
-    compute_cycles = work.flops / (peak_flops * utilization)
+    utilization = min(1.0, work.fma_chains / 4) if work.fma_chains > 1 else 1.0
+    compute_cycles = work.flops / (peak_flops * utilization) + work.horizontal_cycles
 
     bandwidth = _bandwidth(context.host, cpu_id, work.working_set_bytes, vector_bytes)
     data_cycles = work.memory_bytes / bandwidth
-    packing_cycles = work.packing_elements / lanes
+    packing_bandwidth = _bandwidth(
+        context.host, cpu_id, max(1, work.packing_bytes), vector_bytes
+    )
+    packing_cycles = work.packing_elements / lanes + (
+        2 * work.packing_bytes / packing_bandwidth
+    )
     registers = 32 if context.host.architecture == "aarch64" or lanes >= 16 else 16
     spills = max(0, work.register_vectors - (registers - 6))
     overhead_cycles = work.tile_visits * (4 + spills)
@@ -152,6 +166,11 @@ def _parallel_work(plan: ExecutionPlan, shape: Mapping[str, int]) -> _Work:
     registers = (
         tile.q * code.microkernel.qk_vectors + tile.q + 3 if packed else 5
     )
+    horizontal_cycles = (
+        0.0
+        if packed
+        else rows * query * executed_key * _HORIZONTAL_REDUCE_CYCLES
+    )
     return _Work(
         qk_flops + pv_flops,
         memory_bytes,
@@ -160,6 +179,8 @@ def _parallel_work(plan: ExecutionPlan, shape: Mapping[str, int]) -> _Work:
         working_set,
         fma_chains,
         registers,
+        horizontal_cycles,
+        packing_elements * _FP32_BYTES,
     )
 
 

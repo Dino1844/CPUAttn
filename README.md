@@ -172,7 +172,10 @@ The executor keeps one anonymous workspace arena keyed by memory layout and
 NUMA group topology. A cached plan reuses it; changing placement discards it so
 candidate first-touch histories cannot leak. Packing, when selected, remains
 inside native timing. Output/state allocation remains outside native timing.
-Native workers restore their original affinity after every call. Calls through
+Workers pin themselves to their assigned CPU and keep that placement between
+calls; the master thread, which returns to foreign code between calls,
+restores its original affinity after every call, and any change of pin target
+restores the previous original affinity before re-pinning. Calls through
 one `Runtime` are serialized because its tuner and workspace are shared; use
 separate Runtime instances when independent concurrent execution is required.
 

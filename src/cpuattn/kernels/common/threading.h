@@ -2,26 +2,48 @@
 #define MINI_CPUATTN_THREADING_H
 
 #if defined(__linux__)
+#include <omp.h>
 #include <sched.h>
 typedef struct {
     cpu_set_t set;
     int valid;
 } cpuattn_affinity_state;
+
+/* Workers keep their pinned placement in TLS between calls; only the master thread, which returns to foreign code, restores affinity. */
+static __thread int cpuattn_tls_target = -1;
+static __thread int cpuattn_tls_has_original = 0;
+static __thread cpu_set_t cpuattn_tls_original;
+
 static inline int cpuattn_pin_worker(
     const int *cpu_ids, int workers, cpuattn_affinity_state *original) {
+    (void)original;
     int worker = omp_get_thread_num();
     if (worker >= workers) return -1;
-    original->valid = 0;
-    if (sched_getaffinity(0, sizeof(original->set), &original->set) != 0) return -1;
-    original->valid = 1;
+    int target = cpu_ids[worker];
+    if (cpuattn_tls_target == target) return 0;
+    if (cpuattn_tls_has_original
+        && sched_setaffinity(
+            0, sizeof(cpuattn_tls_original), &cpuattn_tls_original) != 0)
+        return -1;
+    if (sched_getaffinity(0, sizeof(cpuattn_tls_original), &cpuattn_tls_original) != 0)
+        return -1;
+    cpuattn_tls_has_original = 1;
     cpu_set_t set;
     CPU_ZERO(&set);
-    CPU_SET(cpu_ids[worker], &set);
-    return sched_setaffinity(0, sizeof(set), &set);
+    CPU_SET(target, &set);
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) return -1;
+    cpuattn_tls_target = target;
+    return 0;
 }
 static inline int cpuattn_restore_worker(const cpuattn_affinity_state *original) {
-    if (!original->valid) return -1;
-    return sched_setaffinity(0, sizeof(original->set), &original->set);
+    (void)original;
+    if (omp_get_thread_num() != 0) return 0;
+    if (!cpuattn_tls_has_original) return 0;
+    int status = sched_setaffinity(
+        0, sizeof(cpuattn_tls_original), &cpuattn_tls_original);
+    cpuattn_tls_target = -1;
+    cpuattn_tls_has_original = 0;
+    return status == 0 ? 0 : -1;
 }
 #else
 typedef struct { int valid; } cpuattn_affinity_state;

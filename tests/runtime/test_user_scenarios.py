@@ -73,3 +73,27 @@ def test2(
     )
     np.testing.assert_allclose(continued.output, expected_continued.output, rtol=2e-4, atol=2e-5)
     np.testing.assert_allclose(continued.state, expected_continued.state, rtol=2e-4, atol=2e-5)
+
+
+def test3(runtime_cache: Path, runtime_host) -> None:
+    """A growing-KV decode stream tunes once per bucket, then replays."""
+    rng = np.random.default_rng(103)
+    operator = Parallel(score_mod=expr.identity() * 0.125, mask_mod=expr.causal())
+    q = rng.normal(size=(1, 8, 1, 17)).astype(np.float32)
+    k_full = rng.normal(size=(1, 1, 40, 17)).astype(np.float32)
+    v_full = rng.normal(size=(1, 1, 40, 15)).astype(np.float32)
+    runtime = Runtime(host=runtime_host, cache_dir=runtime_cache)
+    modes = []
+    for skv in (33, 34, 35):
+        k = k_full[:, :, :skv].copy()
+        v = v_full[:, :, :skv].copy()
+        actual = runtime.run(operator, q=q, k=k, v=v, kv_cache=True)
+        modes.append(runtime.last_selection.mode)
+        expected = reference_parallel(
+            operator,
+            validate_parallel_call(operator, q=q, k=k, v=v, kv_cache=True),
+        )
+        np.testing.assert_allclose(actual, expected, rtol=2e-4, atol=2e-5)
+    # The first step may hit a bucket published by an earlier test.
+    assert modes[1] == "cache"
+    assert modes[2] == "cache"
