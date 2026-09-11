@@ -105,7 +105,6 @@ def attention_torch(
     *,
     causal: bool,
     query_offset: int = 0,
-    threads: int | None = None,
 ) -> np.ndarray:
     """PyTorch SDPA baseline; K/V are expanded for grouped-query shapes.
 
@@ -113,8 +112,6 @@ def attention_torch(
     SDPA's is_causal is always top-left aligned.
     """
     assert torch is not None and F is not None
-    if threads is not None:
-        torch.set_num_threads(threads)
     hq, hkv = q.shape[1], k.shape[1]
     expand = hq // hkv if hq % hkv == 0 and hq >= hkv else 1
     tq = torch.from_numpy(q)

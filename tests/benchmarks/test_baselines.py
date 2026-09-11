@@ -191,3 +191,26 @@ def test_attention_numpy_suffix_decode_matches_reference() -> None:
     expected = reference_parallel(operator, call)
     actual = attention_numpy(q, k, v, causal=True, scale=0.125, query_offset=4)
     assert np.abs(actual - expected).max() < 2e-5
+
+
+def test_torch_baseline_sets_threads_outside_timed_region_and_restores() -> None:
+    pytest.importorskip("torch")
+    import torch
+
+    from benchmarks.runners import _torch_baseline
+
+    original = torch.get_num_threads()
+    seen: list[int] = []
+
+    def call() -> np.ndarray:
+        seen.append(torch.get_num_threads())
+        return np.zeros((1, 1, 1, 1), dtype=np.float32)
+
+    try:
+        _torch_baseline(
+            call, ours_median_ns=1.0, runs=2, worker_counts=(1, 4)
+        )
+        assert set(seen) == {1, 4}
+    finally:
+        torch.set_num_threads(original)
+    assert torch.get_num_threads() == original

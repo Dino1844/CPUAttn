@@ -18,6 +18,7 @@ from cpuattn.schedule.plan import ExecutionPlan
 from .baselines import (
     attention_numpy,
     attention_torch,
+    torch,
     kda_numpy,
     linear_numpy,
     torch_available,
@@ -84,23 +85,27 @@ def _baseline(
 
 
 def _torch_baseline(
-    call: Callable[[int], np.ndarray],
+    call: Callable[[], np.ndarray],
     *,
     ours_median_ns: float,
     runs: int,
     worker_counts: tuple[int, int],
 ) -> BaselineResult:
-    """Best torch SDPA across CPUAttn's own worker count and the full core set."""
+    """Best torch SDPA across CPUAttn's own worker count and the full core set.
+
+    Threads are configured outside the timed region and restored afterwards.
+    """
+    original_threads = torch.get_num_threads()
     best_samples: list[int] = []
     best_threads = 0
-    for threads in sorted(set(worker_counts)):
-        samples = collect(
-            functools.partial(call, threads=threads),
-            warmup=_BASELINE_WARMUP,
-            runs=runs,
-        )
-        if not best_samples or summarize(samples).median < summarize(best_samples).median:
-            best_samples, best_threads = samples, threads
+    try:
+        for threads in sorted(set(worker_counts)):
+            torch.set_num_threads(threads)
+            samples = collect(call, warmup=_BASELINE_WARMUP, runs=runs)
+            if not best_samples or summarize(samples).median < summarize(best_samples).median:
+                best_samples, best_threads = samples, threads
+    finally:
+        torch.set_num_threads(original_threads)
     return _baseline(f"torch_sdpa@{best_threads}t", best_samples, None, ours_median_ns)
 
 
@@ -173,8 +178,8 @@ def _run_prefill(
         baselines = _attention_baselines(
             lambda: attention_numpy(q, k, v, causal=workload.causal, scale=scale),
             (
-                lambda *, threads: attention_torch(
-                    q, k, v, causal=workload.causal, query_offset=0, threads=threads
+                lambda: attention_torch(
+                    q, k, v, causal=workload.causal, query_offset=0
                 )
             )
             if with_torch
@@ -280,13 +285,12 @@ def _run_decode_stream(
                 query_offset=median_skv - 1,
             ),
             (
-                lambda *, threads: attention_torch(
+                lambda: attention_torch(
                     q_tokens[median_step - 1],
                     k_buffer[:, :, :median_skv],
                     v_buffer[:, :, :median_skv],
                     causal=True,
                     query_offset=median_skv - 1,
-                    threads=threads,
                 )
             )
             if with_torch
