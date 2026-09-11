@@ -73,10 +73,12 @@ int cpuattn_run(
         cpuattn_pack_k_for_owner(
             k, packed_k, packed_copy_bytes, B, HKV, SKV, D, packed_skv, packed_prefix, k_pitch,
             worker_groups, workers, packed_owner_groups, packed_owner_count);
-        #pragma omp barrier
+        if (packed_prefix < SKV) {
+            #pragma omp barrier
+        }
 {% endif %}
 
-        #pragma omp for schedule(static, 1)
+        #pragma omp for schedule(static, 1) nowait
         for (int64_t work = 0; work < work_items; ++work) {
             int64_t qb_index = work % q_blocks;
             int64_t hq = (work / q_blocks) % HQ;

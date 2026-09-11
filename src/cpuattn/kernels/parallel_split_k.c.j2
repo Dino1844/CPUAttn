@@ -75,7 +75,9 @@ int cpuattn_run(
         cpuattn_pack_k_for_owner(
             k, packed_k, packed_copy_bytes, B, HKV, SKV, D, packed_skv, packed_prefix, k_pitch,
             worker_groups, workers, packed_owner_groups, packed_owner_count);
-        #pragma omp barrier
+        if (packed_prefix < SKV) {
+            #pragma omp barrier
+        }
 {% endif %}
 
         int part = omp_get_thread_num();
@@ -209,7 +211,7 @@ int cpuattn_run(
         }
 
         #pragma omp barrier
-        #pragma omp for schedule(static)
+        #pragma omp for schedule(static) nowait
         for (int64_t row = 0; row < rows; ++row) {
             int group_roots[group_count];
             for (int group = 0; group < group_count; ++group) group_roots[group] = -1;
