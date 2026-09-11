@@ -236,6 +236,31 @@ silently reported as supported.
 The package imports no implementation from the parent `try_attn/cpuattn`
 tree.
 
+## Benchmark suite
+
+`benchmarks/` is the systematic performance harness (the fixed two-shape demo in
+`scripts/benchmark.sh` remains for quick sanity checks). The workload matrix
+covers prefill (GQA/MQA/MHA, D/DV 64/128, batch, non-causal, 128-2048 tokens),
+growing-KV decode streams crossing bucket boundaries (up to Q32/skv≈3100),
+standard linear attention, KDA (gated delta rule with unit-norm keys), Mamba2
+(SSD: per-token decay + outer update), and per-worker-count thread scaling —
+against NumPy/BLAS and optional PyTorch SDPA baselines. Every case is verified
+numerically against the scalar reference, and reports include steady-state
+wall/native distributions, cold first-call latency, baseline speedups, and the
+winning plan.
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.run --suite smoke --runs 11   # quick
+PYTHONPATH=src python3 -m benchmarks.run --suite full              # full matrix
+PYTHONPATH=src python3 -m benchmarks.run --suite full --filter decode --no-torch
+```
+
+Reports are written to `artifacts/benchmarks/<timestamp>-<arch>.json` with full
+environment provenance (CPU, versions, git commit, sampling configuration).
+Framework logic is unit-tested in `tests/benchmarks/`; baselines are verified
+against the scalar reference implementation. Absolute numbers are only
+meaningful on a quiet machine — compare medians within one run.
+
 ## Reproducible environment
 
 The supported submission environment is the DevContainer in

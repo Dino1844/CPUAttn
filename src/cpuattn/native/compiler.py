@@ -8,11 +8,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from ..core.operator import Operator
 from ..core.validate import ValidatedCall
+from ..log import event
 from ..schedule.plan import CodePlan, CompiledPlan
 from .backends.base import Backend
 from .emit import render_source
@@ -53,6 +55,7 @@ class Compiler:
         self._identities: dict[Backend, dict[str, object]] = {}
         self._compiled: dict[str, CompiledPlan] = {}
         self._loaded: dict[str, NativeKernel] = {}
+        self.stats = {"memory_hits": 0, "disk_hits": 0, "builds": 0}
 
     def identity(self, backend: Backend) -> dict[str, object]:
         cached = self._identities.get(backend)
@@ -102,6 +105,7 @@ class Compiler:
         })
         cached = self._compiled.get(request_key)
         if cached is not None:
+            self.stats["memory_hits"] += 1
             return cached
         source = self.source(operator, call, code)
         compiler = str(compiler_identity["compiler"])
@@ -126,10 +130,13 @@ class Compiler:
         with lock_path.open("a+") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             if not library_path.is_file() or not manifest_path.is_file():
+                self.stats["builds"] += 1
                 _atomic_text(source_path, source)
                 temporary = directory / f"kernel.{os.getpid()}.so"
                 command = [compiler, *flags, str(source_path), "-o", str(temporary)]
+                started = time.perf_counter()
                 result = subprocess.run(command, text=True, capture_output=True)
+                build_seconds = time.perf_counter() - started
                 if result.returncode:
                     temporary.unlink(missing_ok=True)
                     raise RuntimeError(
@@ -137,10 +144,13 @@ class Compiler:
                         f"{result.stderr[-2000:]}"
                     )
                 os.replace(temporary, library_path)
+                event("compiled plan=%s in %.2fs", code.identity[:12], build_seconds)
                 _atomic_text(
                     manifest_path,
                     json.dumps(identity, sort_keys=True, indent=2),
                 )
+            else:
+                self.stats["disk_hits"] += 1
         compiled = CompiledPlan(code, key, library_path, source_path, manifest_path)
         self._compiled[request_key] = compiled
         return compiled

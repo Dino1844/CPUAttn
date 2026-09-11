@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 from threading import Lock
+from typing import TYPE_CHECKING
 
-from .native.backends.base import Backend
-from .hardware.host import Host
+if TYPE_CHECKING:
+    from .native.backends.base import Backend
+    from .hardware.host import Host
 
 
 _LOGGER = logging.getLogger("cpuattn")
@@ -12,13 +14,21 @@ _LOCK = Lock()
 _ANNOUNCED: set[tuple[str, str]] = set()
 
 
-def configure_logging(level: int = logging.INFO) -> None:
+def _ensure_handler() -> None:
+    """Install the default handler; INFO visibility unless a level was set."""
     if not _LOGGER.handlers:
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("[cpuattn] %(levelname)s %(message)s"))
         _LOGGER.addHandler(handler)
-    _LOGGER.setLevel(level)
+        if _LOGGER.level == logging.NOTSET:
+            _LOGGER.setLevel(logging.INFO)
     _LOGGER.propagate = False
+
+
+def configure_logging(level: int = logging.INFO) -> None:
+    """Explicit user configuration; always takes effect."""
+    _ensure_handler()
+    _LOGGER.setLevel(level)
 
 
 def startup(host: Host, backend: Backend) -> None:
@@ -27,7 +37,7 @@ def startup(host: Host, backend: Backend) -> None:
         if key in _ANNOUNCED:
             return
         _ANNOUNCED.add(key)
-    configure_logging()
+    _ensure_handler()
     _LOGGER.info(
         "host arch=%s vendor=%s model=%s logical_cpus=%d physical_cores=%d "
         "cpuset=%s sve_vector_bytes=%s; "
@@ -44,7 +54,7 @@ def startup(host: Host, backend: Backend) -> None:
 
 
 def event(message: str, *args: object) -> None:
-    configure_logging()
+    _ensure_handler()
     _LOGGER.info(message, *args)
 
 

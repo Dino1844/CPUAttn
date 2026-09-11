@@ -17,6 +17,7 @@ from .core.validate import (
     validate_linear_call,
     validate_parallel_call,
 )
+from . import diagnostics
 from .hardware.host import Host, detect_host
 from .log import event, startup
 from .native.backends import select_backend
@@ -216,6 +217,11 @@ class Runtime:
                 kv_cache=True,
             )
             self._bucket_calls[token] = bucket_call
+            event(
+                "kv_cache bucket edge=%d operator=%s",
+                edge,
+                operator.fingerprint[:12],
+            )
         return bucket_call
 
     def _plans(
@@ -373,35 +379,42 @@ class Runtime:
         )
         selection = Selection(key, winner, "tune", records)
         self._selection_cache.publish(selection)
+        diagnostics.log_selection(
+            context, selection, self.host, self.backend, self.compiler.stats
+        )
         return selection
 
     def _packed_prefix(
         self,
         call: ParallelCall,
         plan: ExecutionPlan,
-    ) -> tuple[int, tuple[Any, ...]]:
-        """Rows of K already packed for this buffer; any mismatch returns 0."""
+    ) -> tuple[int, tuple[Any, ...], str | None]:
+        """Rows of K already packed for this buffer; any mismatch returns 0.
+
+        The reason names why a previously valid packed state was discarded.
+        """
         if plan.code.packing.value != "k_transposed":
-            return 0, ()
+            return 0, (), None
         b, _, _, d = call.q.shape
         _, hkv, skv, _ = call.k.shape
         key = (plan.identity, call.k.ctypes.data, b, hkv, d)
-        prefix = 0
         state = self._kv_packed
-        if (
-            state is not None
-            and state.key == key
-            and state.seq == self._arena_seq
-            # Strict growth: a same-length call may have edited rows in place.
-            and state.skv < skv
-        ):
-            tile_k = plan.code.tile.k
-            # The packed layout is strided by _packed_skv; when that stride
-            # changes the retained rows are unreadable, so only equal strides
-            # may reuse the prefix.
-            if _packed_skv(state.skv, tile_k) == _packed_skv(skv, tile_k):
-                prefix = state.skv
-        return prefix, key
+        if state is None:
+            return 0, key, None
+        if state.key != key:
+            return 0, key, "buffer-changed"
+        if state.seq != self._arena_seq:
+            return 0, key, "arena-changed"
+        # Strict growth: a same-length call may have edited rows in place.
+        if state.skv >= skv:
+            return 0, key, "non-growing"
+        tile_k = plan.code.tile.k
+        # The packed layout is strided by _packed_skv; when that stride
+        # changes the retained rows are unreadable, so only equal strides
+        # may reuse the prefix.
+        if _packed_skv(state.skv, tile_k) != _packed_skv(skv, tile_k):
+            return 0, key, "stride-changed"
+        return state.skv, key, None
 
     def _run_cached(
         self,
@@ -422,9 +435,11 @@ class Runtime:
             kernel = self.compiler.load(compiled)
             self.executor.prepare_launch(kernel, plan.launch)
             self._winner_kernels[token] = kernel
-        packed_prefix, packed_key = 0, ()
+        packed_prefix, packed_key, fallback_reason = 0, (), None
         if isinstance(call, ParallelCall) and call.kv_cache:
-            packed_prefix, packed_key = self._packed_prefix(call, plan)
+            packed_prefix, packed_key, fallback_reason = self._packed_prefix(call, plan)
+        if fallback_reason is not None:
+            diagnostics.log_fallback(fallback_reason)
         timed = self.executor.run(kernel, plan, call, packed_prefix)
         self._arena_seq += 1
         if packed_key:
@@ -453,4 +468,4 @@ class Runtime:
         return timed
 
 
-__all__ = ["Runtime"]
+__all__ = ["Runtime", "diagnostics"]
