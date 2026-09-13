@@ -184,4 +184,20 @@ static inline void cpuattn_linear_matvec(
     }
 }
 
+/* Solve (I + L) W = W in place by forward substitution; L is rows x stride
+   strictly lower triangular. */
+static inline void cpuattn_delta_solve(
+    float *restrict w,
+    const float *restrict l,
+    int rows,
+    int stride,
+    int64_t dv_size) {
+    for (int m = 0; m < rows; ++m) {
+        for (int j = 0; j < m; ++j)
+            cpuattn_axpy_inplace(
+                w + (int64_t)m * dv_size, w + (int64_t)j * dv_size,
+                dv_size, -l[(int64_t)m * stride + j]);
+    }
+}
+
 #endif

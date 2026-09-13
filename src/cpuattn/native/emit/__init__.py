@@ -26,6 +26,7 @@ def render_source(
         else {
             LoweringKind.LINEAR_SCAN,
             LoweringKind.LINEAR_CHUNKED,
+            LoweringKind.LINEAR_DELTA,
             LoweringKind.LINEAR_2D,
         }
     )

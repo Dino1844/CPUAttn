@@ -20,8 +20,12 @@ masks retain their elementwise semantics inside the same lowering.
 The Linear backend always retains the general ordered state scan. Definitions
 whose structure is exactly `Scale? -> Outer(k, v)` with a Q readout additionally
 receive block sizes 2, 4, and 6. That lowering computes intra-block causal QK/PV
-work and the end-of-block state update separately; it is never selected from an
-operator name or used for `Rank1`/DPLR transitions.
+work and the end-of-block state update separately, and is never selected from an
+operator name. The gated delta rule
+(`Scale? -> Rank1(-beta*k, k) -> Outer(k, beta*v)`) with a Q readout additionally
+receives a chunked lowering that solves the within-chunk lower-triangular system
+before the same block update; it too is recognized structurally, never by name.
+It is never used for `Rank1`/DPLR transitions outside that proven form.
 
 Kernel code follows three layers. Jinja templates own the Pattern algorithm and
 thread decomposition, `kernels/simd/{parallel,linear}.h` owns contiguous tiled

@@ -205,6 +205,9 @@ class PlanBuilder:
             if code.lowering is LoweringKind.LINEAR_CHUNKED:
                 block = code.tile.q
                 floats = 2 * block * d + 2 * block * dv + block * block + 3 * block
+            elif code.lowering is LoweringKind.LINEAR_DELTA:
+                block = code.tile.q
+                floats = 2 * block * d + 3 * block * dv + block * block + 5 * block
             else:
                 floats = 2 * d + 2 * dv
             worker_stride = _align(floats * 4, private_alignment)

@@ -14,6 +14,7 @@ class LoweringKind(str, Enum):
     PARALLEL_2D = "parallel_2d"
     LINEAR_SCAN = "linear_scan"
     LINEAR_CHUNKED = "linear_chunked"
+    LINEAR_DELTA = "linear_delta"
     LINEAR_2D = "linear_2d"
 
 

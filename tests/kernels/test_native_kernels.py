@@ -407,3 +407,47 @@ def test12(tmp_path: Path, native) -> None:
         actual = _execute(compiler, operator, call, plan, backend)
         assert np.isfinite(actual).all(), lowering
         np.testing.assert_array_equal(actual, 0.0, err_msg=lowering.value)
+
+
+def test13(tmp_path: Path, native) -> None:
+    """The chunked gated delta lowering matches the scalar reference."""
+    host, backend = native
+    rng = np.random.default_rng(41)
+    operator = Linear(
+        transition=transition.program(
+            transition.scale(expr.argument("gate")),
+            transition.rank1(-expr.argument("beta") * expr.var("k"), expr.var("k")),
+            transition.outer(expr.var("k"), expr.argument("beta") * expr.var("v")),
+        ),
+        readout=transition.readout(timing=transition.ReadTiming.AFTER),
+        arguments=(
+            TensorArgSpec("gate", (Axis.BATCH, Axis.SEQUENCE)),
+            TensorArgSpec("beta", (Axis.BATCH, Axis.SEQUENCE)),
+        ),
+    )
+    call = validate_linear_call(
+        operator,
+        q=rng.normal(size=(1, 2, 7, 5)).astype(np.float32),
+        k=rng.normal(size=(1, 2, 7, 5)).astype(np.float32),
+        v=rng.normal(size=(1, 2, 7, 9)).astype(np.float32),
+        arguments={
+            "gate": rng.uniform(0.9, 1.0, size=(1, 7)).astype(np.float32),
+            "beta": rng.uniform(0.05, 0.95, size=(1, 7)).astype(np.float32),
+        },
+    )
+    expected = reference_linear(operator, call)
+    plans = [
+        plan
+        for plan in _plans(operator, call, host, backend)
+        if plan.code.lowering is LoweringKind.LINEAR_DELTA
+    ]
+    assert plans
+    compiler = Compiler(tmp_path)
+    for plan in plans:
+        actual = _execute(compiler, operator, call, plan, backend)
+        np.testing.assert_allclose(
+            actual.output, expected.output, rtol=2e-4, atol=2e-5, err_msg=plan.identity
+        )
+        np.testing.assert_allclose(
+            actual.state, expected.state, rtol=2e-4, atol=2e-5, err_msg=plan.identity
+        )

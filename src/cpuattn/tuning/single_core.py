@@ -189,7 +189,12 @@ def _linear_work(plan: ExecutionPlan, shape: Mapping[str, int]) -> _Work:
     rows = shape["batch"] * shape["state_head"]
     sequence, d_size, dv_size = shape["sequence"], shape["d"], shape["dv"]
     state_elements = d_size * dv_size
-    block = tile.q if plan.code.lowering is LoweringKind.LINEAR_CHUNKED else 1
+    block = (
+        tile.q
+        if plan.code.lowering
+        in (LoweringKind.LINEAR_CHUNKED, LoweringKind.LINEAR_DELTA)
+        else 1
+    )
     padded_sequence = _ceil_div(sequence, block) * block
     flops = 4 * rows * padded_sequence * state_elements
     if block > 1:

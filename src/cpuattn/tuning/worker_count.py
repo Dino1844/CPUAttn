@@ -114,6 +114,7 @@ def _plan_preference(
     else:
         lowering = {
             LoweringKind.LINEAR_CHUNKED: 0,
+            LoweringKind.LINEAR_DELTA: 0,
             LoweringKind.LINEAR_SCAN: 1,
             LoweringKind.LINEAR_2D: 2,
         }[code.lowering]

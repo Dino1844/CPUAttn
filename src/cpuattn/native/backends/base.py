@@ -5,7 +5,7 @@ from shutil import which
 
 from ...errors import UnsupportedError
 from ...hardware.host import Host
-from ..lowering import linear_block_plan
+from ..lowering import delta_block_plan, linear_block_plan
 from ...core.operator import Operator, Parallel
 from ...schedule.plan import (
     CodePlan,
@@ -166,6 +166,18 @@ class Backend:
                             DecompositionKind.STATE_HEADS,
                             TileShape(block, block, lanes, lanes),
                             MicrokernelSpec(f"linear_chunked_m{block}n{lanes}"),
+                            WorkspaceABI(("scratch",)),
+                            packing=PackingKind.NONE,
+                        )
+                    )
+            if delta_block_plan(operator) is not None:
+                for block in ((2, 4, 6) if lanes >= 8 else (2, 4)):
+                    plans.append(
+                        self._code_plan(
+                            LoweringKind.LINEAR_DELTA,
+                            DecompositionKind.STATE_HEADS,
+                            TileShape(block, block, lanes, lanes),
+                            MicrokernelSpec(f"linear_delta_m{block}n{lanes}"),
                             WorkspaceABI(("scratch",)),
                             packing=PackingKind.NONE,
                         )

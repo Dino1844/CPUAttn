@@ -11,7 +11,12 @@ from ...core.operator import Linear
 from ...core.tensor import Axis, TensorArgSpec
 from ...errors import UnsupportedError
 from ...schedule.plan import CodePlan, LoweringKind
-from ..lowering import LinearBlockPlan, linear_block_plan
+from ..lowering import (
+    DeltaBlockPlan,
+    LinearBlockPlan,
+    delta_block_plan,
+    linear_block_plan,
+)
 from .expression import (
     emit_expr,
     emit_simd_expr,
@@ -33,6 +38,11 @@ def render_linear(
         if plan is None:
             raise UnsupportedError("Linear definition is not algebraically chunkable")
         return _render_chunked(templates, operator, code, plan)
+    if code.lowering is LoweringKind.LINEAR_DELTA:
+        delta = delta_block_plan(operator)
+        if delta is None:
+            raise UnsupportedError("Linear definition is not a chunkable gated delta rule")
+        return _render_delta(templates, operator, code, delta)
     if code.lowering is LoweringKind.LINEAR_2D:
         return _render_2d(templates, operator, code)
 
@@ -92,6 +102,41 @@ def _render_chunked(
             else "1.0f"
         ),
         read_before=operator.readout.timing is transition.ReadTiming.BEFORE,
+    )
+
+
+def _render_delta(
+    templates: Environment,
+    operator: Linear,
+    code: CodePlan,
+    plan: DeltaBlockPlan,
+) -> str:
+    q_context = {"x": "x", **linear_argument_map(operator.arguments, "d")}
+    v_context = {"x": "x", **linear_argument_map(operator.arguments, "dv")}
+    q_vector_context = {
+        "x": "x_v",
+        **simd_argument_map(operator.arguments, linear_names(), Axis.D),
+    }
+    v_vector_context = {
+        "x": "x_v",
+        **simd_argument_map(operator.arguments, linear_names(), Axis.DV),
+    }
+    factor_context = linear_argument_map(operator.arguments, "d")
+    return templates.get_template("linear_delta.c.j2").render(
+        code=code,
+        arguments=operator.arguments,
+        q_mod=emit_expr(operator.q_mod, q_context),
+        k_mod=emit_expr(operator.k_mod, q_context),
+        v_mod=emit_expr(operator.v_mod, v_context),
+        q_mod_simd=emit_simd_expr(operator.q_mod, q_vector_context),
+        k_mod_simd=emit_simd_expr(operator.k_mod, q_vector_context),
+        v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
+        scale_expr=(
+            emit_expr(plan.scale.factor, factor_context)
+            if plan.scale is not None
+            else "1.0f"
+        ),
+        beta_expr=emit_expr(plan.beta, factor_context),
     )
 
 
