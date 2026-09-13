@@ -56,6 +56,7 @@ def render_linear(
         k_mod_simd=emit_simd_expr(operator.k_mod, q_vector_context),
         v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
         body_code=_scan_body(operator, specs),
+        all_identity=_all_identity(operator),
     )
 
 
@@ -122,6 +123,7 @@ def _render_2d(
         transition_code=_linear_transition_code(operator, specs, _DV_BLOCK),
         readout_code=_readout_code(operator, specs, _DV_BLOCK),
         read_before=operator.readout.timing is transition.ReadTiming.BEFORE,
+        all_identity=_all_identity(operator),
     )
 
 
@@ -174,6 +176,18 @@ def _transition_context(
     context = {"q": "qv[d]", "k": "kv[d]", "v": "vv[dv]"}
     context.update(linear_argument_map(tuple(specs.values()), axis))
     return context
+
+
+def _is_identity(expression: Expr) -> bool:
+    return expression.kind == "var" and expression.name == "x"
+
+
+def _all_identity(operator: Linear) -> bool:
+    return (
+        _is_identity(operator.q_mod)
+        and _is_identity(operator.k_mod)
+        and _is_identity(operator.v_mod)
+    )
 
 
 def _uses_d_vector(

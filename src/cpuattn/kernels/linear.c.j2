@@ -40,11 +40,11 @@ static int cpuattn_run(
         }
         /* Per-worker scratch: q/k mods, v mod, the rank1 temporary, and the
            fused rank1/readout vectors. */
-        float *qv = (float *)((unsigned char *)raw_workspace
+        float *q_buf = (float *)((unsigned char *)raw_workspace
             + (size_t)omp_get_thread_num() * scratch_stride);
-        float *kv = qv + D;
-        float *vv = kv + D;
-        float *linear_tmp = vv + DV;
+        float *k_buf = q_buf + D;
+        float *v_buf = k_buf + D;
+        float *linear_tmp = v_buf + DV;
         float *right_vector = linear_tmp + DV;
         float *left_vector = right_vector + D;
         float *query_vector = left_vector + D;
@@ -58,20 +58,25 @@ static int cpuattn_run(
                 int64_t q_base = ((b * G + g) * S + s) * D;
                 int64_t v_base = ((b * H + h) * S + s) * DV;
                 int64_t output_base = ((b * H + h) * S + s) * DV;
+{% if all_identity %}
+                const float *qv = q + q_base;
+                const float *kv = k + q_base;
+                const float *vv = v + v_base;
+{% else %}
                 for (int64_t db = 0; db < D; db += TILE_D) {
                     int64_t dend = db + TILE_D < D ? db + TILE_D : D;
                     int64_t d = db;
                     for (; d + CPUATTN_SIMD_LANES <= dend; d += CPUATTN_SIMD_LANES) {
                         cpuattn_simd_t x_v = cpuattn_simd_load(q + q_base + d);
-                        cpuattn_simd_store(qv + d, {{ q_mod_simd }});
+                        cpuattn_simd_store(q_buf + d, {{ q_mod_simd }});
                         x_v = cpuattn_simd_load(k + q_base + d);
-                        cpuattn_simd_store(kv + d, {{ k_mod_simd }});
+                        cpuattn_simd_store(k_buf + d, {{ k_mod_simd }});
                     }
                     for (; d < dend; ++d) {
                         float x = q[q_base + d];
-                        qv[d] = {{ q_mod }};
+                        q_buf[d] = {{ q_mod }};
                         x = k[q_base + d];
-                        kv[d] = {{ k_mod }};
+                        k_buf[d] = {{ k_mod }};
                     }
                 }
                 for (int64_t dvb = 0; dvb < DV; dvb += TILE_DV) {
@@ -79,13 +84,17 @@ static int cpuattn_run(
                     int64_t dv = dvb;
                     for (; dv + CPUATTN_SIMD_LANES <= dvend; dv += CPUATTN_SIMD_LANES) {
                         cpuattn_simd_t x_v = cpuattn_simd_load(v + v_base + dv);
-                        cpuattn_simd_store(vv + dv, {{ v_mod_simd }});
+                        cpuattn_simd_store(v_buf + dv, {{ v_mod_simd }});
                     }
                     for (; dv < dvend; ++dv) {
                         float x = v[v_base + dv];
-                        vv[dv] = {{ v_mod }};
+                        v_buf[dv] = {{ v_mod }};
                     }
                 }
+                const float *qv = q_buf;
+                const float *kv = k_buf;
+                const float *vv = v_buf;
+{% endif %}
 {{ body_code | indent(16, true) }}
             }
         }
