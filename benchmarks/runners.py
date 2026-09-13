@@ -486,7 +486,9 @@ def run_thread_scaling_case(
         call = validate_parallel_call(operator, q=q, k=k, v=v)
         # Thread scaling deliberately enumerates plans through the internal
         # planner so every worker count can be forced and priced.
-        plans, _, _ = runtime._plans(operator, runtime._tune_call(operator, call))
+        plans = runtime._plans(
+            operator, runtime._tune_call(operator, call)
+        ).plans
         levels: list[ThreadLevel] = []
         for workers in workload.workers:
             candidates = [plan for plan in plans if plan.launch.workers == workers]
