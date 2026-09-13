@@ -178,6 +178,18 @@ def _transition_context(
     return context
 
 
+def _uses_d_vector(
+    expression: Expr, specs: Mapping[str, TensorArgSpec]
+) -> bool:
+    """True when a per-token expression varies along the d (row) axis."""
+    if expression.variables() & {"q", "k"}:
+        return True
+    return any(
+        Axis.D in specs[name].axes
+        for name in expression.variables() & specs.keys()
+    )
+
+
 @dataclass(frozen=True)
 class _DvSlice:
     """How generated code addresses the dv dimension of one lowering."""
@@ -202,34 +214,56 @@ def _linear_transition_code(
     for number, step in enumerate(operator.transition.steps):
         if isinstance(step, transition.Scale):
             factor = emit_expr(step.factor, _transition_context(specs, "d"))
-            lines.extend(
-                [
-                    "for (int64_t d = 0; d < D; ++d) {",
-                    f"    float factor_{number} = {factor};",
-                    f"    cpuattn_scale_inplace(state + state_base + d * DV{dv.suffix},",
-                    f"        {dv.span}, factor_{number});",
-                    "}",
-                ]
-            )
+            if dv is _DV_ALL and not _uses_d_vector(step.factor, specs):
+                lines.extend(
+                    [
+                        "cpuattn_scale_inplace(state + state_base, D * DV,",
+                        f"    {factor});",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        "for (int64_t d = 0; d < D; ++d) {",
+                        f"    float factor_{number} = {factor};",
+                        f"    cpuattn_scale_inplace(state + state_base + d * DV{dv.suffix},",
+                        f"        {dv.span}, factor_{number});",
+                        "}",
+                    ]
+                )
         elif isinstance(step, transition.Rank1):
             left = emit_expr(step.left, _transition_context(specs, "d"))
             right = emit_expr(step.right, _transition_context(specs, "d"))
-            lines.extend(
-                [
-                    f"cpuattn_zero(linear_tmp{dv.suffix}, {dv.span});",
-                    "for (int64_t d = 0; d < D; ++d) {",
-                    f"    float right_{number} = {right};",
-                    f"    cpuattn_axpy_inplace(linear_tmp{dv.suffix},",
-                    f"        state + state_base + d * DV{dv.suffix}, {dv.span},",
-                    f"        right_{number});",
-                    "}",
-                    "for (int64_t d = 0; d < D; ++d) {",
-                    f"    float left_{number} = {left};",
-                    f"    cpuattn_axpy_inplace(state + state_base + d * DV{dv.suffix},",
-                    f"        linear_tmp{dv.suffix}, {dv.span}, left_{number});",
-                    "}",
-                ]
-            )
+            if dv is _DV_ALL:
+                lines.extend(
+                    [
+                        "for (int64_t d = 0; d < D; ++d) {",
+                        f"    right_vector[d] = {right};",
+                        "}",
+                        "for (int64_t d = 0; d < D; ++d) {",
+                        f"    left_vector[d] = {left};",
+                        "}",
+                        "cpuattn_linear_rank1(state + state_base, right_vector,",
+                        "    left_vector, linear_tmp, D, DV);",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        f"cpuattn_zero(linear_tmp{dv.suffix}, {dv.span});",
+                        "for (int64_t d = 0; d < D; ++d) {",
+                        f"    float right_{number} = {right};",
+                        f"    cpuattn_axpy_inplace(linear_tmp{dv.suffix},",
+                        f"        state + state_base + d * DV{dv.suffix}, {dv.span},",
+                        f"        right_{number});",
+                        "}",
+                        "for (int64_t d = 0; d < D; ++d) {",
+                        f"    float left_{number} = {left};",
+                        f"    cpuattn_axpy_inplace(state + state_base + d * DV{dv.suffix},",
+                        f"        linear_tmp{dv.suffix}, {dv.span}, left_{number});",
+                        "}",
+                    ]
+                )
         else:
             left = emit_expr(step.left, _transition_context(specs, "d"))
             right = emit_expr(step.right, _transition_context(specs, "dv"))
@@ -253,6 +287,16 @@ def _readout_code(
     dv: _DvSlice,
 ) -> str:
     query = emit_expr(operator.readout.query, _transition_context(specs, "d"))
+    if dv is _DV_ALL:
+        return "\n".join(
+            [
+                "for (int64_t d = 0; d < D; ++d) {",
+                f"    query_vector[d] = {query};",
+                "}",
+                "cpuattn_linear_matvec(output + output_base, query_vector,",
+                "    state + state_base, D, DV);",
+            ]
+        )
     return "\n".join(
         [
             f"cpuattn_zero(output + output_base{dv.suffix}, {dv.span});",

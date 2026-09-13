@@ -127,4 +127,61 @@ static inline void cpuattn_state_update_block(
     }
 }
 
+/* state += left (x) (state^T . right), computed with the reduction held in a
+   register so the temporary is written once instead of once per row. */
+static inline void cpuattn_linear_rank1(
+    float *restrict state,
+    const float *restrict right,
+    const float *restrict left,
+    float *restrict tmp,
+    int64_t d_size,
+    int64_t dv_size) {
+    for (int64_t dv = 0; dv < dv_size; dv += CPUATTN_SIMD_LANES) {
+        int width = (int)(dv_size - dv < CPUATTN_SIMD_LANES
+            ? dv_size - dv : CPUATTN_SIMD_LANES);
+        cpuattn_simd_t acc = cpuattn_simd_zero();
+        for (int64_t d = 0; d < d_size; ++d) {
+            acc = cpuattn_simd_fma(
+                right[d],
+                cpuattn_simd_load_partial(state + d * dv_size + dv, width),
+                acc);
+        }
+        cpuattn_simd_store_partial(tmp + dv, acc, width);
+    }
+    for (int64_t d = 0; d < d_size; ++d) {
+        for (int64_t dv = 0; dv < dv_size; dv += CPUATTN_SIMD_LANES) {
+            int width = (int)(dv_size - dv < CPUATTN_SIMD_LANES
+                ? dv_size - dv : CPUATTN_SIMD_LANES);
+            cpuattn_simd_store_partial(
+                state + d * dv_size + dv,
+                cpuattn_simd_fma(
+                    left[d],
+                    cpuattn_simd_load_partial(tmp + dv, width),
+                    cpuattn_simd_load_partial(state + d * dv_size + dv, width)),
+                width);
+        }
+    }
+}
+
+/* output = query^T . state, with the reduction held in a register. */
+static inline void cpuattn_linear_matvec(
+    float *restrict output,
+    const float *restrict query,
+    const float *restrict state,
+    int64_t d_size,
+    int64_t dv_size) {
+    for (int64_t dv = 0; dv < dv_size; dv += CPUATTN_SIMD_LANES) {
+        int width = (int)(dv_size - dv < CPUATTN_SIMD_LANES
+            ? dv_size - dv : CPUATTN_SIMD_LANES);
+        cpuattn_simd_t acc = cpuattn_simd_zero();
+        for (int64_t d = 0; d < d_size; ++d) {
+            acc = cpuattn_simd_fma(
+                query[d],
+                cpuattn_simd_load_partial(state + d * dv_size + dv, width),
+                acc);
+        }
+        cpuattn_simd_store_partial(output + dv, acc, width);
+    }
+}
+
 #endif

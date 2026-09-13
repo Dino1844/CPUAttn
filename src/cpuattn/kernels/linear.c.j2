@@ -25,7 +25,7 @@ static int cpuattn_run(
     const int *cpu_ids, int workers) {
     if (!q || !k || !v || !state || !output || !raw_workspace || !cpu_ids || workers <= 0) return -1;
     size_t scratch_stride = cpuattn_align_size(
-        (size_t)(2 * D + 2 * DV) * sizeof(float), cpuattn_page_size());
+        (size_t)(5 * D + 2 * DV) * sizeof(float), cpuattn_page_size());
     if (workspace_bytes < (size_t)workers * scratch_stride) return -2;
     int affinity_error = 0;
     int64_t rows = B * H;
@@ -38,11 +38,16 @@ static int cpuattn_run(
             affinity_error |= omp_get_num_threads() != workers;
             affinity_error |= cpuattn_pin_worker(cpu_ids, workers, &original_affinity) != 0;
         }
+        /* Per-worker scratch: q/k mods, v mod, the rank1 temporary, and the
+           fused rank1/readout vectors. */
         float *qv = (float *)((unsigned char *)raw_workspace
             + (size_t)omp_get_thread_num() * scratch_stride);
         float *kv = qv + D;
         float *vv = kv + D;
         float *linear_tmp = vv + DV;
+        float *right_vector = linear_tmp + DV;
+        float *left_vector = right_vector + D;
+        float *query_vector = left_vector + D;
         #pragma omp for schedule(static) nowait
         for (int64_t row = 0; row < rows; ++row) {
             int64_t h = row % H;
