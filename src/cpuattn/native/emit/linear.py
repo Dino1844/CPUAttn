@@ -55,9 +55,7 @@ def render_linear(
         q_mod_simd=emit_simd_expr(operator.q_mod, q_vector_context),
         k_mod_simd=emit_simd_expr(operator.k_mod, q_vector_context),
         v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
-        transition_code=_linear_transition_code(operator, specs, _DV_ALL),
-        readout_code=_readout_code(operator, specs, _DV_ALL),
-        read_before=operator.readout.timing is transition.ReadTiming.BEFORE,
+        body_code=_scan_body(operator, specs),
     )
 
 
@@ -209,9 +207,12 @@ def _linear_transition_code(
     operator: Linear,
     specs: Mapping[str, TensorArgSpec],
     dv: _DvSlice,
+    steps=None,
 ) -> str:
     lines: list[str] = []
-    for number, step in enumerate(operator.transition.steps):
+    for number, step in enumerate(
+        operator.transition.steps if steps is None else steps
+    ):
         if isinstance(step, transition.Scale):
             factor = emit_expr(step.factor, _transition_context(specs, "d"))
             if dv is _DV_ALL and not _uses_d_vector(step.factor, specs):
@@ -306,6 +307,70 @@ def _readout_code(
             f"        state + state_base + d * DV{dv.suffix}, {dv.span}, query_value);",
             "}",
         ]
+    )
+
+
+def _fused_outer_readout(
+    step: transition.Outer,
+    operator: Linear,
+    specs: Mapping[str, TensorArgSpec],
+) -> list[str]:
+    """Apply the final Outer update and the readout in one pass over the state.
+
+    The row is updated once and immediately accumulated into the output, so the
+    state is not read back for a separate readout pass. Element order matches
+    the unfused sequence, keeping the result bit-exact.
+    """
+    left = emit_expr(step.left, _transition_context(specs, "d"))
+    right = emit_expr(step.right, _transition_context(specs, "dv"))
+    query = emit_expr(operator.readout.query, _transition_context(specs, "d"))
+    return [
+        "for (int64_t d = 0; d < D; ++d) {",
+        f"    left_vector[d] = {left};",
+        "}",
+        "for (int64_t d = 0; d < D; ++d) {",
+        f"    query_vector[d] = {query};",
+        "}",
+        "for (int64_t dv = 0; dv < DV; ++dv)",
+        f"    linear_tmp[dv] = {right};",
+        "for (int64_t dv = 0; dv < DV; dv += CPUATTN_SIMD_LANES) {",
+        "    int width = (int)(DV - dv < CPUATTN_SIMD_LANES ? DV - dv : CPUATTN_SIMD_LANES);",
+        "    cpuattn_simd_t acc = cpuattn_simd_zero();",
+        "    for (int64_t d = 0; d < D; ++d) {",
+        "        cpuattn_simd_t row = cpuattn_simd_fma(",
+        "            left_vector[d],",
+        "            cpuattn_simd_load_partial(linear_tmp + dv, width),",
+        "            cpuattn_simd_load_partial(state + state_base + d * DV + dv, width));",
+        "        cpuattn_simd_store_partial(state + state_base + d * DV + dv, row, width);",
+        "        acc = cpuattn_simd_fma(query_vector[d], row, acc);",
+        "    }",
+        "    cpuattn_simd_store_partial(output + output_base + dv, acc, width);",
+        "}",
+    ]
+
+
+def _scan_body(
+    operator: Linear, specs: Mapping[str, TensorArgSpec]
+) -> str:
+    """Assemble one scan token's state work, fusing the tail when possible."""
+    read_before = operator.readout.timing is transition.ReadTiming.BEFORE
+    steps = operator.transition.steps
+    if read_before:
+        return "\n".join(
+            (
+                _readout_code(operator, specs, _DV_ALL),
+                _linear_transition_code(operator, specs, _DV_ALL),
+            )
+        )
+    if steps and isinstance(steps[-1], transition.Outer):
+        head = _linear_transition_code(operator, specs, _DV_ALL, steps[:-1])
+        fused = _fused_outer_readout(steps[-1], operator, specs)
+        return "\n".join((head, *fused)) if head else "\n".join(fused)
+    return "\n".join(
+        (
+            _linear_transition_code(operator, specs, _DV_ALL),
+            _readout_code(operator, specs, _DV_ALL),
+        )
     )
 
 
