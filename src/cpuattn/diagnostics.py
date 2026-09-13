@@ -37,6 +37,7 @@ class SelectionDiagnostics:
     tuner: dict[str, object]
     measurements: tuple[dict[str, object], ...]
     winner: dict[str, object]
+    tuning: dict[str, object]
     workspace: dict[str, object]
     compile_cache: dict[str, int]
     numeric: dict[str, object] | None = None
@@ -51,6 +52,7 @@ class SelectionDiagnostics:
             "tuner": self.tuner,
             "measurements": list(self.measurements),
             "winner": self.winner,
+            "tuning": self.tuning,
             "workspace": self.workspace,
             "compile_cache": self.compile_cache,
             "numeric": self.numeric,
@@ -140,6 +142,7 @@ def build_selection_diagnostics(
             "label": labels.get(record.plan_id, "?"),
             "status": record.status,
             "latency_ns": record.latency_ns,
+            "min_ns": min(record.samples_ns) if record.samples_ns else None,
             "samples_ns": list(record.samples_ns),
         }
         for record in selection.records
@@ -162,10 +165,40 @@ def build_selection_diagnostics(
             "mode": selection.mode,
             "latency_ns": selection.winner.latency_ns,
         },
+        tuning=_tuning_record(selection, winner_plan.identity),
         workspace=_workspace_record(winner_plan.memory, winner_plan.code.packing.value),
         compile_cache={key: int(value) for key, value in compiler_stats.items()},
         numeric=None if numeric is None else dict(numeric),
     )
+
+
+def _tuning_record(selection: Selection, winner_id: str) -> dict[str, object]:
+    """Expose how tight and how steady the tuning decision was.
+
+    A small margin over the runner-up, or a large spread across the winner's own
+    samples, means the choice rests on a contended window and deserves a quiet
+    re-tune rather than trust.
+    """
+    timed = [record for record in selection.records if record.latency_ns is not None]
+    ranked = sorted(timed, key=lambda record: (record.latency_ns, record.plan_id))
+    winner = next(
+        (record for record in selection.records if record.plan_id == winner_id), None
+    )
+    runner = next(
+        (record for record in ranked if record.plan_id != winner_id), None
+    )
+    margin = None
+    if winner is not None and winner.latency_ns is not None and runner is not None:
+        margin = runner.latency_ns - winner.latency_ns
+    spread = None
+    if winner is not None and winner.samples_ns:
+        low = min(winner.samples_ns)
+        spread = round(max(winner.samples_ns) / low, 3) if low > 0 else None
+    return {
+        "candidates": len(selection.records),
+        "winner_spread": spread,
+        "runner_up_margin_ns": margin,
+    }
 
 
 def _host_record(host: Host) -> dict[str, object]:
@@ -245,6 +278,9 @@ def render(record: SelectionDiagnostics) -> str:
         ],
         f"  winner: {record.winner['label']} native={_ms(record.winner['latency_ns'])} "
         f"mode={record.winner['mode']}",
+        f"  tuning: candidates={record.tuning['candidates']} "
+        f"winner_spread={record.tuning['winner_spread']} "
+        f"runner_up_margin_ns={record.tuning['runner_up_margin_ns']}",
         f"  workspace: {record.workspace['summary']}",
         f"  compile cache: {record.compile_cache}",
     ]

@@ -123,6 +123,9 @@ def test_runtime_explain_is_structured_and_serializable(tmp_path) -> None:
     )
     assert payload["plans"]["execution_plans"] > 0
     assert payload["measurements"] and payload["winner"]["plan_id"]
+    assert payload["measurements"][0]["min_ns"] is not None
+    assert payload["tuning"]["candidates"] >= 1
+    assert "winner_spread" in payload["tuning"]
     assert payload["workspace"]["regions"]
     assert payload["workspace"]["summary"].startswith("total=")
     assert set(payload["compile_cache"]) == {"memory_hits", "disk_hits", "builds"}
