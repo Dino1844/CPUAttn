@@ -86,6 +86,24 @@ def test4() -> None:
         )
 
 
+def test4_undeclared_arguments_are_rejected() -> None:
+    """An operator that declares no arguments still rejects supplied ones."""
+    validate_parallel_call(
+        Parallel(),
+        q=f32((1, 2, 3, 5)),
+        k=f32((1, 1, 7, 5)),
+        v=f32((1, 1, 7, 9)),
+    )
+    with pytest.raises(ValueError, match="extra=\\['scale'\\]"):
+        validate_parallel_call(
+            Parallel(),
+            q=f32((1, 2, 3, 5)),
+            k=f32((1, 1, 7, 5)),
+            v=f32((1, 1, 7, 9)),
+            arguments={"scale": f32((1, 2, 3, 5))},
+        )
+
+
 def test5() -> None:
     """K/V accept prefix views of a preallocated cache and report head strides."""
     operator = Parallel()

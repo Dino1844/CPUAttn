@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, NamedTuple
 
 import numpy as np
 
@@ -21,8 +20,7 @@ _RESERVED_ARGUMENTS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class ParallelCall:
+class ParallelCall(NamedTuple):
     q: np.ndarray
     k: np.ndarray
     v: np.ndarray
@@ -66,8 +64,7 @@ class ParallelCall:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class LinearCall:
+class LinearCall(NamedTuple):
     q: np.ndarray
     k: np.ndarray
     v: np.ndarray
@@ -201,16 +198,22 @@ def validate_parallel_call(
         raise ValueError("query_heads must be divisible by kv_heads")
     if kv_cache and key_length < q_array.shape[2]:
         raise ValueError("kv_cache key_length must be at least query_length")
-    dims = {
-        Axis.BATCH: b,
-        Axis.QUERY_HEAD: query_heads,
-        Axis.KV_HEAD: kv_heads,
-        Axis.QUERY: q_array.shape[2],
-        Axis.KEY: key_length,
-        Axis.D: d,
-        Axis.DV: v_array.shape[3],
-    }
-    bound = _validate_arguments(operator.arguments, arguments, dims)
+    if operator.arguments or arguments:
+        bound = _validate_arguments(
+            operator.arguments,
+            arguments,
+            {
+                Axis.BATCH: b,
+                Axis.QUERY_HEAD: query_heads,
+                Axis.KV_HEAD: kv_heads,
+                Axis.QUERY: q_array.shape[2],
+                Axis.KEY: key_length,
+                Axis.D: d,
+                Axis.DV: v_array.shape[3],
+            },
+        )
+    else:
+        bound = ()
     return ParallelCall(
         q_array, k_array, v_array, bound, bool(kv_cache), k_pitch, v_pitch
     )
@@ -243,15 +246,21 @@ def validate_linear_call(
         expected = (b, state_heads, d, dv)
         if state_array.shape != expected:
             raise ValueError(f"state must have shape {expected}; got {state_array.shape}")
-    dims = {
-        Axis.BATCH: b,
-        Axis.PARAMETER_GROUP: groups,
-        Axis.STATE_HEAD: state_heads,
-        Axis.SEQUENCE: sequence,
-        Axis.D: d,
-        Axis.DV: dv,
-    }
-    bound = _validate_arguments(operator.arguments, arguments, dims)
+    if operator.arguments or arguments:
+        bound = _validate_arguments(
+            operator.arguments,
+            arguments,
+            {
+                Axis.BATCH: b,
+                Axis.PARAMETER_GROUP: groups,
+                Axis.STATE_HEAD: state_heads,
+                Axis.SEQUENCE: sequence,
+                Axis.D: d,
+                Axis.DV: dv,
+            },
+        )
+    else:
+        bound = ()
     return LinearCall(q_array, k_array, v_array, state_array, bound)
 
 
@@ -266,6 +275,12 @@ def _validate_arguments(
     values: Mapping[str, Any] | None,
     dimensions: Mapping[Axis, int],
 ) -> tuple[tuple[str, np.ndarray], ...]:
+    if not specs:
+        if values:
+            raise ValueError(
+                f"operator argument mismatch: missing=[], extra={sorted(values)}"
+            )
+        return ()
     supplied = dict(values or {})
     expected_names = {item.name for item in specs}
     if set(supplied) != expected_names:

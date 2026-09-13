@@ -452,11 +452,16 @@ class Runtime:
             self.executor.prepare_launch(kernel, plan.launch)
             self._winner_kernels[token] = kernel
         packed_prefix, packed_key, fallback_reason = 0, (), None
+        # ``packed_key[1]`` is the K data pointer the prefix check already read;
+        # reuse it so the executor does not read the same address twice.
+        k_address = None
         if isinstance(call, ParallelCall) and call.kv_cache:
             packed_prefix, packed_key, fallback_reason = self._packed_prefix(call, plan)
+            if packed_key:
+                k_address = packed_key[1]
         if fallback_reason is not None:
             diagnostics.log_fallback(fallback_reason)
-        timed = self.executor.run(kernel, plan, call, packed_prefix)
+        timed = self.executor.run(kernel, plan, call, packed_prefix, k_address)
         self._arena_seq += 1
         if packed_key:
             self._kv_packed = _PackedKState(

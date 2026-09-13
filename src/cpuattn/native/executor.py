@@ -11,6 +11,15 @@ from ..schedule.plan import ExecutionPlan, LaunchPlan, TimedPlan
 from ..core.validate import LinearCall, ParallelCall, ValidatedCall
 
 
+# slots, scalars, elapsed, and the persistent ctypes arguments for the call.
+_PackedTemplate = tuple[
+    np.ndarray,
+    np.ndarray,
+    ctypes.c_uint64,
+    tuple[ctypes.c_void_p, ctypes.c_void_p, object],
+]
+
+
 class Executor:
     """Drive generated kernels through their packed flat-ABI entry point.
 
@@ -29,9 +38,7 @@ class Executor:
         self._launch_arrays: dict[
             str, tuple[np.ndarray, np.ndarray, np.ndarray]
         ] = {}
-        self._packed: dict[
-            str, tuple[np.ndarray, np.ndarray, ctypes.c_uint64]
-        ] = {}
+        self._packed: dict[str, _PackedTemplate] = {}
 
     def _workspace_for(self, plan: ExecutionPlan) -> np.ndarray:
         if plan.identity != self._arena_key:
@@ -97,7 +104,7 @@ class Executor:
         kernel: NativeKernel,
         plan: ExecutionPlan,
         call: ValidatedCall,
-    ) -> tuple[np.ndarray, np.ndarray, ctypes.c_uint64]:
+    ) -> _PackedTemplate:
         """Prebuild the pointer/scalar arrays for one artifact and plan.
 
         Slots hold tensors in call order followed by workspace, ``cpu_ids``,
@@ -131,7 +138,17 @@ class Executor:
             slots[6 + argument_count] = cpu_ids.ctypes.data
             scalars[6] = plan.memory.total_bytes
         elapsed = ctypes.c_uint64()
-        template = (slots, scalars, elapsed)
+        # The arrays never move, so the ctypes argument objects are built once.
+        template = (
+            slots,
+            scalars,
+            elapsed,
+            (
+                ctypes.c_void_p(slots.ctypes.data),
+                ctypes.c_void_p(scalars.ctypes.data),
+                ctypes.byref(elapsed),
+            ),
+        )
         self._packed[token] = template
         return template
 
@@ -141,27 +158,32 @@ class Executor:
         plan: ExecutionPlan,
         call: ValidatedCall,
         packed_prefix: int = 0,
+        k_address: int | None = None,
     ) -> TimedPlan:
         if kernel.compiled.code != plan.code:
             raise ValueError("compiled code and execution plan do not match")
-        slots, scalars, elapsed = self._packed_template(kernel, plan, call)
+        slots, scalars, elapsed, args = self._packed_template(kernel, plan, call)
         if isinstance(call, ParallelCall):
             b, hq, sq, d = call.q.shape
             _, hkv, skv, _ = call.k.shape
             dv = call.v.shape[3]
             output = np.empty((b, hq, sq, dv), dtype=np.float32)
-            values = (
-                call.q,
-                call.k,
-                call.v,
-                output,
-                *(value for _, value in call.arguments),
+            values: tuple[np.ndarray, ...] = (call.q, call.k, call.v, output)
+            if call.arguments:
+                values += tuple(value for _, value in call.arguments)
+            scalars[0:11] = (
+                call.query_offset,
+                packed_prefix,
+                call.k_pitch or skv * d,
+                call.v_pitch or skv * dv,
+                b,
+                hq,
+                hkv,
+                sq,
+                skv,
+                d,
+                dv,
             )
-            scalars[0] = call.query_offset
-            scalars[1] = packed_prefix
-            scalars[2] = call.k_pitch or skv * d
-            scalars[3] = call.v_pitch or skv * dv
-            scalars[4:11] = (b, hq, hkv, sq, skv, d, dv)
             scalars[12] = plan.launch.workers
             result_value: object = output
         else:
@@ -175,24 +197,19 @@ class Executor:
                 else call.state.copy()
             )
             output = np.empty((b, heads, sequence, dv), dtype=np.float32)
-            values = (
-                call.q,
-                call.k,
-                call.v,
-                state,
-                output,
-                *(value for _, value in call.arguments),
-            )
+            values = (call.q, call.k, call.v, state, output)
+            if call.arguments:
+                values += tuple(value for _, value in call.arguments)
             scalars[0:6] = (b, groups, heads, sequence, d, dv)
             scalars[7] = plan.launch.workers
             result_value = LinearResult(output, state)
         for index, value in enumerate(values):
-            slots[index] = value.ctypes.data
-        status = kernel._execute_packed(
-            ctypes.c_void_p(slots.ctypes.data),
-            ctypes.c_void_p(scalars.ctypes.data),
-            ctypes.byref(elapsed),
-        )
+            slots[index] = (
+                k_address
+                if index == 1 and k_address is not None
+                else value.ctypes.data
+            )
+        status = kernel._execute_packed(*args)
         if status != 0:
             raise RuntimeError(f"native execution failed with status {status}")
         return TimedPlan(plan, kernel.compiled, int(elapsed.value), result_value)
