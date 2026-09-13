@@ -1,0 +1,30 @@
+/* Flat-ABI expansion for the Parallel lowerings. The Python executor passes the
+   same arguments as a pointer array (tensors then workspace, cpu_ids,
+   worker_groups, packed_owner_groups) and a scalar array (query_offset,
+   packed_prefix, k_pitch, v_pitch, B, HQ, HKV, SQ, SKV, D, DV, workspace_bytes,
+   workers, group_count, packed_owner_count), so one shallow call replaces the
+   per-argument ctypes marshalling. */
+int cpuattn_execute_packed(
+    void *const *slots,
+    const int64_t *scalars,
+    uint64_t *elapsed_ns) {
+    if (!slots || !scalars || !elapsed_ns) return -4;
+    uint64_t begin = cpuattn_now_ns();
+    int status = cpuattn_run(
+        (const float *)slots[0],
+        (const float *)slots[1],
+        (const float *)slots[2],
+        (float *)slots[3],
+{% for argument in arguments %}
+        (const float *)slots[{{ 4 + loop.index0 }}],
+{% endfor %}
+        scalars[0], scalars[1], scalars[2], scalars[3], scalars[4],
+        scalars[5], scalars[6], scalars[7], scalars[8], scalars[9],
+        scalars[10],
+        (void *)slots[{{ 4 + arguments | length }}], (size_t)scalars[11],
+        (const int *)slots[{{ 5 + arguments | length }}], (int)scalars[12],
+        (const int *)slots[{{ 6 + arguments | length }}], (int)scalars[13],
+        (const int *)slots[{{ 7 + arguments | length }}], (int)scalars[14]);
+    *elapsed_ns = cpuattn_now_ns() - begin;
+    return status;
+}

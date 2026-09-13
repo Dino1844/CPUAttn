@@ -19,7 +19,7 @@
 #include "simd/parallel.h"
 #include "simd/expr.h"
 
-int cpuattn_run(
+static int cpuattn_run(
     const float *restrict q,
     const float *restrict k,
     const float *restrict v,
@@ -78,7 +78,7 @@ int cpuattn_run(
         }
 {% endif %}
 
-        #pragma omp for schedule(static, 1) nowait
+        #pragma omp for schedule({{ code.schedule.value }}, 1) nowait
         for (int64_t work = 0; work < work_items; ++work) {
             int64_t qb_index = work % q_blocks;
             int64_t hq = (work / q_blocks) % HQ;
@@ -256,29 +256,4 @@ int cpuattn_run(
     return affinity_error ? 1 : 0;
 }
 
-int cpuattn_execute(
-    const float *restrict q,
-    const float *restrict k,
-    const float *restrict v,
-    float *restrict output{% for argument in arguments %},
-    const float *restrict arg_{{ argument.name }}{% endfor %},
-    int64_t query_offset,
-    int64_t packed_prefix,
-    int64_t k_pitch, int64_t v_pitch,
-    int64_t B, int64_t HQ, int64_t HKV, int64_t SQ,
-    int64_t SKV, int64_t D, int64_t DV,
-    void *restrict workspace, size_t workspace_bytes,
-    const int *cpu_ids, int workers,
-    const int *worker_groups, int group_count,
-    const int *packed_owner_groups, int packed_owner_count,
-    uint64_t *elapsed_ns) {
-    if (!elapsed_ns || !workspace || workspace_bytes == 0) return -4;
-    uint64_t begin = cpuattn_now_ns();
-    int status = cpuattn_run(
-        q, k, v, output{% for argument in arguments %}, arg_{{ argument.name }}{% endfor %},
-        query_offset, packed_prefix, k_pitch, v_pitch, B, HQ, HKV, SQ, SKV, D, DV, workspace, workspace_bytes,
-        cpu_ids, workers, worker_groups, group_count,
-        packed_owner_groups, packed_owner_count);
-    *elapsed_ns = cpuattn_now_ns() - begin;
-    return status;
-}
+{% include "common/execute_packed_parallel.c.j2" %}

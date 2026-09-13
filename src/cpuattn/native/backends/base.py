@@ -15,6 +15,7 @@ from ...schedule.plan import (
     MergeKind,
     MicrokernelSpec,
     PackingKind,
+    ScheduleKind,
     TileShape,
     WorkspaceABI,
 )
@@ -77,24 +78,29 @@ class Backend:
                                 if packing is PackingKind.NONE
                                 else ("packed_k", "scratch")
                             )
-                            plans.append(
-                                self._code_plan(
-                                    LoweringKind.PARALLEL_BLOCKED,
-                                    DecompositionKind.QUERY_BLOCKS,
-                                    TileShape(
-                                        tile_q,
-                                        qk_vectors * lanes * multiplier,
-                                        call.q.shape[3],
-                                        lanes * dv_multiplier,
-                                    ),
-                                    MicrokernelSpec(
-                                        f"qk_m{tile_q}n{qk_vectors}_pv_m{tile_q}",
-                                        qk_vectors,
-                                    ),
-                                    WorkspaceABI(regions),
-                                    packing=packing,
+                            for schedule in (
+                                ScheduleKind.STATIC,
+                                ScheduleKind.DYNAMIC,
+                            ):
+                                plans.append(
+                                    self._code_plan(
+                                        LoweringKind.PARALLEL_BLOCKED,
+                                        DecompositionKind.QUERY_BLOCKS,
+                                        TileShape(
+                                            tile_q,
+                                            qk_vectors * lanes * multiplier,
+                                            call.q.shape[3],
+                                            lanes * dv_multiplier,
+                                        ),
+                                        MicrokernelSpec(
+                                            f"qk_m{tile_q}n{qk_vectors}_pv_m{tile_q}",
+                                            qk_vectors,
+                                        ),
+                                        WorkspaceABI(regions),
+                                        packing=packing,
+                                        schedule=schedule,
+                                    )
                                 )
-                            )
             if operator.row_norm.supports_split_k:
                 for tile_k in (2 * lanes, 4 * lanes):
                     tile = TileShape(1, tile_k, call.q.shape[3], lanes)
@@ -177,6 +183,7 @@ class Backend:
         *,
         packing: PackingKind = PackingKind.K_TRANSPOSED,
         merge: MergeKind = MergeKind.NONE,
+        schedule: ScheduleKind = ScheduleKind.STATIC,
     ) -> CodePlan:
         return CodePlan(
             backend_id=self.backend_id,
@@ -189,6 +196,7 @@ class Backend:
             merge=merge,
             fusion=FusionKind.PATTERN_OWNED,
             workspace_abi=workspace_abi,
+            schedule=schedule,
         )
 
 

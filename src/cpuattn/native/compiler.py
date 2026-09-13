@@ -20,7 +20,7 @@ from .backends.base import Backend
 from .emit import render_source
 
 
-ABI_VERSION = "cpuattn-abi-1"
+ABI_VERSION = "cpuattn-abi-2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,8 +220,13 @@ class NativeKernel:
     def __init__(self, compiled: CompiledPlan) -> None:
         self.compiled = compiled
         self._library = ctypes.CDLL(str(compiled.library))
-        self._execute = self._library.cpuattn_execute
-        self._execute.restype = ctypes.c_int
+        self._execute_packed = self._library.cpuattn_execute_packed
+        self._execute_packed.restype = ctypes.c_int
+        self._execute_packed.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint64),
+        )
         self._prepare_launch = self._library.cpuattn_prepare_launch
         self._prepare_launch.argtypes = (ctypes.c_void_p, ctypes.c_int)
         self._prepare_launch.restype = ctypes.c_int

@@ -17,6 +17,11 @@ class LoweringKind(str, Enum):
     LINEAR_2D = "linear_2d"
 
 
+class ScheduleKind(str, Enum):
+    STATIC = "static"
+    DYNAMIC = "dynamic"
+
+
 class DecompositionKind(str, Enum):
     QUERY_BLOCKS = "query_blocks"
     SPLIT_KEY = "split_key"
@@ -89,6 +94,7 @@ class CodePlan:
     merge: MergeKind
     fusion: FusionKind
     workspace_abi: WorkspaceABI
+    schedule: ScheduleKind = ScheduleKind.STATIC
     # canonical() memoizes into this slot and returns the shared dict:
     # callers must treat canonical() output as read-only.
     _canonical_memo: tuple[dict[str, Any], str] | None = field(
@@ -105,6 +111,12 @@ class CodePlan:
         }
         if not parallel and self.packing is not PackingKind.NONE:
             raise ValueError("Linear code plans cannot pack K")
+        if self.schedule is not ScheduleKind.STATIC and (
+            self.lowering is not LoweringKind.PARALLEL_BLOCKED
+        ):
+            raise ValueError(
+                "only parallel_blocked code plans carry a work-sharing schedule"
+            )
         expects_packed = "packed_k" in self.workspace_abi.region_names
         if expects_packed != (self.packing is PackingKind.K_TRANSPOSED):
             raise ValueError("workspace ABI must match the code plan packing")
@@ -303,6 +315,7 @@ __all__ = [
     "MicrokernelSpec",
     "PackingKind",
     "PlacementKind",
+    "ScheduleKind",
     "TileShape",
     "TimedPlan",
     "WorkerGroup",

@@ -7,7 +7,7 @@ import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from .schedule.plan import ExecutionPlan, MemoryPlan
+from .schedule.plan import ExecutionPlan, MemoryPlan, ScheduleKind
 
 if TYPE_CHECKING:
     from .hardware.host import Host
@@ -45,9 +45,13 @@ def reset_debug_cache() -> None:
 
 
 def plan_label(plan: ExecutionPlan) -> str:
+    """One-line plan summary; the schedule shows only when it is not the default."""
     code = plan.code
+    schedule = (
+        "" if code.schedule is ScheduleKind.STATIC else f"/{code.schedule.value}"
+    )
     return (
-        f"{code.lowering.value}/{code.packing.value} "
+        f"{code.lowering.value}/{code.packing.value}{schedule} "
         f"tile=({code.tile.q},{code.tile.k},{code.tile.d},{code.tile.dv}) "
         f"workers={plan.launch.workers}"
     )

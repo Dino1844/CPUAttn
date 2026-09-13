@@ -12,6 +12,15 @@ from ..core.validate import LinearCall, ParallelCall, ValidatedCall
 
 
 class Executor:
+    """Drive generated kernels through their packed flat-ABI entry point.
+
+    Each plan gets two reusable arrays: a pointer array (tensors, then
+    workspace/cpu_ids/worker_groups/packed owners) and a scalar array (dims and
+    runtime ABI values). Filling them in place replaces per-argument ctypes
+    marshalling, and the generated ``cpuattn_execute_packed`` expands them back
+    into the kernel's flat ``cpuattn_run`` argument list.
+    """
+
     def __init__(self) -> None:
         self._arena: mmap.mmap | None = None
         self._arena_view: np.ndarray | None = None
@@ -20,8 +29,9 @@ class Executor:
         self._launch_arrays: dict[
             str, tuple[np.ndarray, np.ndarray, np.ndarray]
         ] = {}
-        self._arg_templates: dict[str, list[object]] = {}
-        self._elapsed_slots: dict[str, ctypes.c_uint64] = {}
+        self._packed: dict[
+            str, tuple[np.ndarray, np.ndarray, ctypes.c_uint64]
+        ] = {}
 
     def _workspace_for(self, plan: ExecutionPlan) -> np.ndarray:
         if plan.identity != self._arena_key:
@@ -67,8 +77,7 @@ class Executor:
             self._arena.close()
         self._arena = None
         self._arena_key = None
-        self._arg_templates.clear()
-        self._elapsed_slots.clear()
+        self._packed.clear()
 
     def prepare_launch(self, kernel: NativeKernel, launch: LaunchPlan) -> None:
         token = (kernel.compiled.artifact_key, launch.cpu_ids)
@@ -83,77 +92,48 @@ class Executor:
             raise RuntimeError(f"native launch preconditioning failed with status {status}")
         self._prepared.add(token)
 
-    def _argument_template(
+    def _packed_template(
         self,
         kernel: NativeKernel,
         plan: ExecutionPlan,
         call: ValidatedCall,
-    ) -> list[object]:
-        """Prebuild the complete, call-ready argument list for a plan."""
+    ) -> tuple[np.ndarray, np.ndarray, ctypes.c_uint64]:
+        """Prebuild the pointer/scalar arrays for one artifact and plan.
+
+        Slots hold tensors in call order followed by workspace, ``cpu_ids``,
+        ``worker_groups`` and packed owner groups; scalars hold the Parallel
+        dims and runtime ABI values in the order documented in the generated
+        ``cpuattn_execute_packed``. Only the per-call slots are rewritten.
+        """
         token = f"{kernel.compiled.artifact_key}:{plan.identity}"
-        template = self._arg_templates.get(token)
+        template = self._packed.get(token)
         if template is not None:
             return template
         workspace = self._workspace_for(plan)
         cpu_ids, worker_groups, packed_owners = self._launch_arrays_for(plan)
         argument_count = len(call.arguments)
-        parallel = isinstance(call, ParallelCall)
-        pointer_count = (4 if parallel else 5) + argument_count
-        arguments: list[object] = [
-            ctypes.c_void_p() for _ in range(pointer_count)
-        ]
-        offset_slot: ctypes.c_int64 | None = None
-        if parallel:
-            b, hq, sq, d = call.q.shape
-            _, hkv, skv, _ = call.k.shape
-            dv = call.v.shape[3]
-            dimensions = (b, hq, hkv, sq, skv, d, dv)
-            # Per-call slots: baking them into the source would make one artifact per length.
-            offset_slot = ctypes.c_int64()
-            arguments.append(offset_slot)
-            arguments.append(ctypes.c_int64())
-            arguments.append(ctypes.c_int64())
-            arguments.append(ctypes.c_int64())
+        if isinstance(call, ParallelCall):
+            slots = np.empty(8 + argument_count, dtype=np.uint64)
+            scalars = np.empty(15, dtype=np.int64)
+            slots[4 + argument_count] = workspace.ctypes.data
+            slots[5 + argument_count] = cpu_ids.ctypes.data
+            slots[6 + argument_count] = worker_groups.ctypes.data
+            slots[7 + argument_count] = (
+                packed_owners.ctypes.data if packed_owners.size else 0
+            )
+            scalars[11] = plan.memory.total_bytes
+            scalars[13] = len(plan.launch.groups)
+            scalars[14] = packed_owners.size
         else:
-            b, groups, sequence, d = call.q.shape
-            heads = call.v.shape[1]
-            dv = call.v.shape[3]
-            dimensions = (b, groups, heads, sequence, d, dv)
-        arguments.extend(ctypes.c_int64(value) for value in dimensions)
-        arguments.extend((
-            ctypes.c_void_p(workspace.ctypes.data),
-            ctypes.c_size_t(plan.memory.total_bytes),
-            ctypes.c_void_p(cpu_ids.ctypes.data),
-            ctypes.c_int(plan.launch.workers),
-        ))
-        if parallel:
-            owner_pointer = (
-                ctypes.c_void_p(packed_owners.ctypes.data)
-                if packed_owners.size
-                else ctypes.c_void_p()
-            )
-            arguments.extend((
-                ctypes.c_void_p(worker_groups.ctypes.data),
-                ctypes.c_int(len(plan.launch.groups)),
-                owner_pointer,
-                ctypes.c_int(packed_owners.size),
-            ))
+            slots = np.empty(7 + argument_count, dtype=np.uint64)
+            scalars = np.empty(8, dtype=np.int64)
+            slots[5 + argument_count] = workspace.ctypes.data
+            slots[6 + argument_count] = cpu_ids.ctypes.data
+            scalars[6] = plan.memory.total_bytes
         elapsed = ctypes.c_uint64()
-        arguments.append(ctypes.byref(elapsed))
-        kernel._execute.argtypes = (
-            [ctypes.c_void_p] * pointer_count
-            + [ctypes.c_int64] * (len(dimensions) + (4 if parallel else 0))
-            + [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_int]
-            + (
-                [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-                if parallel
-                else []
-            )
-            + [ctypes.POINTER(ctypes.c_uint64)]
-        )
-        self._arg_templates[token] = arguments
-        self._elapsed_slots[token] = elapsed
-        return arguments
+        template = (slots, scalars, elapsed)
+        self._packed[token] = template
+        return template
 
     def run(
         self,
@@ -164,10 +144,25 @@ class Executor:
     ) -> TimedPlan:
         if kernel.compiled.code != plan.code:
             raise ValueError("compiled code and execution plan do not match")
+        slots, scalars, elapsed = self._packed_template(kernel, plan, call)
         if isinstance(call, ParallelCall):
             b, hq, sq, d = call.q.shape
-            output = np.empty((b, hq, sq, call.v.shape[3]), dtype=np.float32)
-            values = [call.q, call.k, call.v, output, *(value for _, value in call.arguments)]
+            _, hkv, skv, _ = call.k.shape
+            dv = call.v.shape[3]
+            output = np.empty((b, hq, sq, dv), dtype=np.float32)
+            values = (
+                call.q,
+                call.k,
+                call.v,
+                output,
+                *(value for _, value in call.arguments),
+            )
+            scalars[0] = call.query_offset
+            scalars[1] = packed_prefix
+            scalars[2] = call.k_pitch or skv * d
+            scalars[3] = call.v_pitch or skv * dv
+            scalars[4:11] = (b, hq, hkv, sq, skv, d, dv)
+            scalars[12] = plan.launch.workers
             result_value: object = output
         else:
             assert isinstance(call, LinearCall)
@@ -180,45 +175,24 @@ class Executor:
                 else call.state.copy()
             )
             output = np.empty((b, heads, sequence, dv), dtype=np.float32)
-            values = [
+            values = (
                 call.q,
                 call.k,
                 call.v,
                 state,
                 output,
                 *(value for _, value in call.arguments),
-            ]
-            result_value = LinearResult(output, state)
-
-        token = f"{kernel.compiled.artifact_key}:{plan.identity}"
-        arguments = self._argument_template(kernel, plan, call)
-        elapsed = self._elapsed_slots[token]
-        for slot, value in zip(arguments, values):
-            slot.value = value.ctypes.data
-        if isinstance(call, ParallelCall):
-            b, hq, sq, d = call.q.shape
-            _, hkv, skv, _ = call.k.shape
-            dv = call.v.shape[3]
-            dims = (
-                call.query_offset,
-                packed_prefix,
-                call.k_pitch or skv * d,
-                call.v_pitch or skv * dv,
-                b,
-                hq,
-                hkv,
-                sq,
-                skv,
-                d,
-                dv,
             )
-        else:
-            assert isinstance(call, LinearCall)
-            dims = (b, groups, heads, sequence, d, dv)
-        scalar_base = len(values)
-        for slot, value in zip(arguments[scalar_base : scalar_base + len(dims)], dims):
-            slot.value = value
-        status = kernel._execute(*arguments)
+            scalars[0:6] = (b, groups, heads, sequence, d, dv)
+            scalars[7] = plan.launch.workers
+            result_value = LinearResult(output, state)
+        for index, value in enumerate(values):
+            slots[index] = value.ctypes.data
+        status = kernel._execute_packed(
+            ctypes.c_void_p(slots.ctypes.data),
+            ctypes.c_void_p(scalars.ctypes.data),
+            ctypes.byref(elapsed),
+        )
         if status != 0:
             raise RuntimeError(f"native execution failed with status {status}")
         return TimedPlan(plan, kernel.compiled, int(elapsed.value), result_value)

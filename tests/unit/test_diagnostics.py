@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -10,7 +12,24 @@ from cpuattn.diagnostics import (
     reset_debug_cache,
     workspace_summary,
 )
-from cpuattn.schedule.plan import MemoryPlan, MemoryRegion, PlacementKind
+from cpuattn.schedule.plan import (
+    CodePlan,
+    DecompositionKind,
+    ExecutionPlan,
+    FusionKind,
+    LaunchPlan,
+    LoweringKind,
+    MemoryPlan,
+    MemoryRegion,
+    MicrokernelSpec,
+    MergeKind,
+    PackingKind,
+    PlacementKind,
+    ScheduleKind,
+    TileShape,
+    WorkerGroup,
+    WorkspaceABI,
+)
 
 
 def test_debug_enabled_reads_the_environment_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -62,6 +81,33 @@ def test_plan_label_matches_rendered_fields(tmp_path) -> None:
     label = plan_label(plan)
     assert plan.code.lowering.value in label
     assert f"workers={plan.launch.workers}" in label
+
+
+def test_plan_label_surfaces_non_static_schedule() -> None:
+    """The work-sharing schedule appears only when it is not the default."""
+    cpus = (0,)
+    code = CodePlan(
+        backend_id="fixture",
+        lowering=LoweringKind.PARALLEL_BLOCKED,
+        microkernel=MicrokernelSpec("qk_m1n1_pv_m1", 1),
+        tile=TileShape(1, 16, 8, 8),
+        vector_bytes=32,
+        decomposition=DecompositionKind.QUERY_BLOCKS,
+        packing=PackingKind.NONE,
+        merge=MergeKind.NONE,
+        fusion=FusionKind.PATTERN_OWNED,
+        workspace_abi=WorkspaceABI(("scratch",)),
+        schedule=ScheduleKind.DYNAMIC,
+    )
+    plan = ExecutionPlan(
+        code,
+        LaunchPlan(cpus, (WorkerGroup(0, cpus),)),
+        MemoryPlan((_region("scratch", 0, 128),), 128),
+    )
+    assert "/dynamic" in plan_label(plan)
+    static = replace(plan, code=replace(code, schedule=ScheduleKind.STATIC))
+    assert "/dynamic" not in plan_label(static)
+    assert "/static" not in plan_label(static)
 
 
 def test_selection_diagnostics_block_on_stderr(

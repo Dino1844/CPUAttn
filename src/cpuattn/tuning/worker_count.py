@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from ..schedule.plan import ExecutionPlan, LoweringKind, PackingKind
+from ..schedule.plan import ExecutionPlan, LoweringKind, PackingKind, ScheduleKind
 from .tuner import Measurement, Tuner, TuningContext, _shape
 
 
@@ -12,7 +12,7 @@ class WorkerCountTuner(Tuner):
     """Measure one statically chosen plan for each selected worker count."""
 
     maxnum: int | None = 6
-    version = 6
+    version = 7
 
     def choose_next(
         self,
@@ -99,8 +99,12 @@ def _plan_preference(
             shape["query_head"] // shape["kv_head"]
         )
         prefer_packed = bool(context.workload.get("kv_cache")) and query_reuse >= 32
+        # Long causal queries have a per-item cost ramp; measuring the dynamic
+        # representative lets the tuner amortize the ramp against scheduling cost.
+        prefer_dynamic = shape["query"] >= 256
         code_key = (
             lowering,
+            (code.schedule is ScheduleKind.DYNAMIC) != prefer_dynamic,
             (code.packing is PackingKind.K_TRANSPOSED) != prefer_packed,
             abs(code.tile.q - (8 if lanes >= 16 else 4)),
             abs(code.microkernel.qk_vectors - 2),

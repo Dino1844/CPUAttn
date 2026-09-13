@@ -8,4 +8,5 @@ export PYTHONPATH="${project_root}/src:${project_root}${PYTHONPATH:+:${PYTHONPAT
 exec "${python_bin}" -m pytest -q \
     "${project_root}/tests/unit" \
     "${project_root}/tests/reference" \
+    "${project_root}/tests/benchmarks" \
     "${project_root}/tests/runtime/test_user_scenarios.py"

@@ -179,6 +179,9 @@ The executor keeps one anonymous workspace arena keyed by memory layout and
 NUMA group topology. A cached plan reuses it; changing placement discards it so
 candidate first-touch histories cannot leak. Packing, when selected, remains
 inside native timing. Output/state allocation remains outside native timing.
+Generated kernels export a packed entry point that expands a pointer array and a
+scalar array back into the kernel's flat argument list, keeping per-call Python
+argument marshalling shallow.
 Workers pin themselves to their assigned CPU and keep that placement between
 calls; the master thread, which returns to foreign code between calls,
 restores its original affinity after every call, and any change of pin target
@@ -194,9 +197,13 @@ Selection keys include the exact workload, complete Host fingerprint, compiler
 identity, selected backend, tuner configuration, and unordered legal candidate
 identities. `PlanBuilder` exposes the full legal plan space without predicting
 performance. The default `WorkerCountTuner` statically chooses one
-representative for each topology-derived worker count and packing kind, and
-measures at most six representatives once. Exact-workload cache hits bypass the
-tuner and execute only the recorded winner. Within one Runtime, immutable
+representative for each topology-derived worker count, packing kind, and
+work-sharing schedule, and measures at most six representatives once. Blocked
+lowerings are enumerated with both static and dynamic work-sharing; the
+representative policy measures dynamic when the query is long enough for the
+causal per-block cost ramp to dominate its scheduling cost. Exact-workload
+cache hits bypass the tuner and execute only the recorded winner. Within one
+Runtime, immutable
 candidate plans, compiler identity, compiled artifacts, and loaded native
 kernels are retained for later calls of the same workload.
 
@@ -238,8 +245,8 @@ tree.
 
 ## Benchmark suite
 
-`benchmarks/` is the systematic performance harness (the fixed two-shape demo in
-`scripts/benchmark.sh` remains for quick sanity checks). The workload matrix
+`benchmarks/` is the systematic performance harness; `scripts/benchmark.sh`
+runs the complete matrix in one command. The workload matrix
 covers prefill (GQA/MQA/MHA, D/DV 64/128, batch, non-causal, 128-2048 tokens),
 growing-KV decode streams crossing bucket boundaries (up to Q32/skv≈3100),
 standard linear attention, KDA (gated delta rule with unit-norm keys), Mamba2
@@ -250,8 +257,8 @@ wall/native distributions, cold first-call latency, baseline speedups, and the
 winning plan.
 
 ```bash
-PYTHONPATH=src python3 -m benchmarks.run --suite smoke --runs 11   # quick
-PYTHONPATH=src python3 -m benchmarks.run --suite full              # full matrix
+./scripts/benchmark.sh                                             # one command, full matrix
+PYTHONPATH=src python3 -m benchmarks.run --suite smoke --runs 11   # quick subset
 PYTHONPATH=src python3 -m benchmarks.run --suite full --filter decode --no-torch
 ```
 
@@ -312,10 +319,6 @@ docker run --rm -it \
   cpuattn python -m pytest -q
 ```
 
-The benchmark reports the first call separately from steady-state latency and
-states whether that call searched or reused a cached selection. It compares
-causal GQA Parallel attention with PyTorch CPU SDPA and
-also measures the optimized Linear recurrence. Override the sample counts with
-`CPUATTN_BENCH_WARMUP` and `CPUATTN_BENCH_RUNS` when needed. Containerization
+Containerization
 locks the software environment, but CPU ISA, topology, frequency, and system
 load still determine performance results.

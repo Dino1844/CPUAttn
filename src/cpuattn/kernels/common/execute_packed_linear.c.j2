@@ -1,0 +1,25 @@
+/* Flat-ABI expansion for the Linear lowerings. The Python executor passes the
+   same arguments as a pointer array (q, k, v, state, output, arguments,
+   workspace, cpu_ids) and a scalar array (B, G, H, S, D, DV, workspace_bytes,
+   workers). */
+int cpuattn_execute_packed(
+    void *const *slots,
+    const int64_t *scalars,
+    uint64_t *elapsed_ns) {
+    if (!slots || !scalars || !elapsed_ns) return -4;
+    uint64_t begin = cpuattn_now_ns();
+    int status = cpuattn_run(
+        (const float *)slots[0],
+        (const float *)slots[1],
+        (const float *)slots[2],
+        (float *)slots[3],
+        (float *)slots[4],
+{% for argument in arguments %}
+        (const float *)slots[{{ 5 + loop.index0 }}],
+{% endfor %}
+        scalars[0], scalars[1], scalars[2], scalars[3], scalars[4], scalars[5],
+        (void *)slots[{{ 5 + arguments | length }}], (size_t)scalars[6],
+        (const int *)slots[{{ 6 + arguments | length }}], (int)scalars[7]);
+    *elapsed_ns = cpuattn_now_ns() - begin;
+    return status;
+}
