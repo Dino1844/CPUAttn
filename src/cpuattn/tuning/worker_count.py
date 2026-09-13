@@ -118,9 +118,16 @@ def _plan_preference(
             LoweringKind.LINEAR_SCAN: 1,
             LoweringKind.LINEAR_2D: 2,
         }[code.lowering]
+        # The delta block amortizes a triangular solve, so it prefers the
+        # largest block; the plain chunked form prefers a small block.
+        block_key = (
+            -code.tile.q
+            if code.lowering is LoweringKind.LINEAR_DELTA
+            else abs(code.tile.q - min(4, shape["sequence"]))
+        )
         code_key = (
             lowering,
-            abs(code.tile.q - min(4, shape["sequence"])),
+            block_key,
             abs(code.tile.d - lanes),
             abs(code.tile.dv - 2 * lanes),
         )

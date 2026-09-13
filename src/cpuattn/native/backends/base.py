@@ -171,7 +171,7 @@ class Backend:
                         )
                     )
             if delta_block_plan(operator) is not None:
-                for block in ((2, 4, 6) if lanes >= 8 else (2, 4)):
+                for block in ((4, 8, 16) if lanes >= 8 else (2, 4)):
                     plans.append(
                         self._code_plan(
                             LoweringKind.LINEAR_DELTA,
