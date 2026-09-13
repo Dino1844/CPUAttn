@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import numpy as np
@@ -10,7 +11,6 @@ from cpuattn.diagnostics import (
     debug_enabled,
     plan_label,
     reset_debug_cache,
-    workspace_summary,
 )
 from cpuattn.schedule.plan import (
     CodePlan,
@@ -55,17 +55,6 @@ def _region(name: str, offset: int, size: int) -> MemoryRegion:
     )
 
 
-def test_workspace_summary_names_every_region() -> None:
-    memory = MemoryPlan(
-        regions=(_region("packed_k", 0, 1536), _region("scratch", 1536, 64)),
-        total_bytes=1600,
-    )
-    summary = workspace_summary(memory)
-    assert "packed_k=1.5KiB" in summary
-    assert "scratch=64B" in summary
-    assert "total=1.6KiB" in summary
-
-
 def _first_selection_plan(runtime: Runtime):
     rng = np.random.default_rng(3)
     operator = Parallel(score_mod=expr.identity() * 0.25, mask_mod=expr.causal())
@@ -108,6 +97,41 @@ def test_plan_label_surfaces_non_static_schedule() -> None:
     static = replace(plan, code=replace(code, schedule=ScheduleKind.STATIC))
     assert "/dynamic" not in plan_label(static)
     assert "/static" not in plan_label(static)
+
+
+def test_runtime_explain_is_structured_and_serializable(tmp_path) -> None:
+    runtime = Runtime(cache_dir=tmp_path)
+    assert runtime.explain() is None
+
+    rng = np.random.default_rng(9)
+    operator = Parallel(score_mod=expr.identity() * 0.25, mask_mod=expr.causal())
+    runtime.run(
+        operator,
+        q=rng.normal(size=(1, 2, 4, 8)).astype("float32"),
+        k=rng.normal(size=(1, 1, 6, 8)).astype("float32"),
+        v=rng.normal(size=(1, 1, 6, 8)).astype("float32"),
+    )
+
+    record = runtime.explain()
+    assert record is not None
+    payload = record.as_json()
+    assert payload["host"]["fingerprint"] == runtime.host.fingerprint
+    assert payload["backend"]["selected"] == runtime.backend.backend_id
+    assert any(
+        item["id"] == runtime.backend.backend_id and item["compatible"]
+        for item in payload["backend"]["candidates"]
+    )
+    assert payload["plans"]["execution_plans"] > 0
+    assert payload["measurements"] and payload["winner"]["plan_id"]
+    assert payload["workspace"]["regions"]
+    assert payload["workspace"]["summary"].startswith("total=")
+    assert set(payload["compile_cache"]) == {"memory_hits", "disk_hits", "builds"}
+    assert payload["numeric"] is None
+    json.dumps(payload)  # must be JSON-serializable
+
+    attached = record.with_numeric({"max_abs_err": 1e-6, "ok": True})
+    assert attached.as_json()["numeric"] == {"max_abs_err": 1e-6, "ok": True}
+    assert record.numeric is None
 
 
 def test_selection_diagnostics_block_on_stderr(

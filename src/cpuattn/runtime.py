@@ -37,6 +37,7 @@ class _PlanEntry(NamedTuple):
     plans: tuple[ExecutionPlan, ...]
     candidates_digest: str
     workload: str
+    workload_canonical: dict[str, object]
 
 
 class _PackedKState(NamedTuple):
@@ -110,6 +111,7 @@ class Runtime:
         # and pinning the K view keeps its buffer address from being reused.
         self._kv_packed: _PackedKState | None = None
         self.last_selection: Selection | None = None
+        self._last_entry: _PlanEntry | None = None
         self._execution_lock = Lock()
         event("runtime ready tuner=%s", type(self.tuner).__name__)
 
@@ -135,18 +137,9 @@ class Runtime:
         )
         with self._execution_lock:
             tune_call = self._tune_call(operator, call)
-            plans, candidates_digest, workload_json = self._plans(
-                operator,
-                tune_call,
-            )
-            selection = self._select(
-                operator,
-                call,
-                tune_call,
-                plans,
-                candidates_digest,
-                workload_json,
-            )
+            entry = self._plans(operator, tune_call)
+            self._last_entry = entry
+            selection = self._select(operator, call, tune_call, entry)
             self.last_selection = selection
             # Cache-mode winners are replayed verbatim; logging every call
             # would only duplicate the tune-time record.
@@ -157,7 +150,31 @@ class Runtime:
                     selection.winner.plan.identity[:12],
                     selection.winner.latency_ns,
                 )
+                record = self.explain()
+                if record is not None:
+                    diagnostics.log_selection(record)
             return selection.winner.result
+
+    def explain(self) -> diagnostics.SelectionDiagnostics | None:
+        """Structured record of the last selection, or None before any run.
+
+        Rebuilt on demand from data the runtime already holds. The reference-free
+        runtime leaves ``numeric`` empty; a test or benchmark can attach one with
+        ``SelectionDiagnostics.with_numeric``.
+        """
+        selection = self.last_selection
+        entry = self._last_entry
+        if selection is None or entry is None:
+            return None
+        return diagnostics.build_selection_diagnostics(
+            selection=selection,
+            host=self.host,
+            backend=self.backend,
+            workload=entry.workload_canonical,
+            plans=entry.plans,
+            tuner=self.tuner,
+            compiler_stats=self.compiler.stats,
+        )
 
     def _validated_call(
         self,
@@ -246,6 +263,7 @@ class Runtime:
                     candidates.encode("utf-8")
                 ).hexdigest(),
                 workload=workload,
+                workload_canonical=call.canonical(),
             )
             self._plan_cache[key] = cached
         return cached
@@ -290,10 +308,11 @@ class Runtime:
         operator: Operator,
         call: ValidatedCall,
         tune_call: ValidatedCall,
-        plans: tuple[ExecutionPlan, ...],
-        candidates_digest: str,
-        workload_json: str,
+        entry: _PlanEntry,
     ) -> Selection:
+        plans = entry.plans
+        candidates_digest = entry.candidates_digest
+        workload_json = entry.workload
         # Key on identity so replacing runtime.tuner invalidates the memo.
         if self._tuner_json_owner is not self.tuner:
             self._tuner_json = json.dumps(
@@ -379,9 +398,6 @@ class Runtime:
         )
         selection = Selection(key, winner, "tune", records)
         self._selection_cache.publish(selection)
-        diagnostics.log_selection(
-            context, selection, self.host, self.backend, self.compiler.stats
-        )
         return selection
 
     def _packed_prefix(

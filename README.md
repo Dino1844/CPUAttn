@@ -227,6 +227,26 @@ runtime = Runtime(tuner=SingleCoreTuner(maxnum=6))
 Artifacts and selections use `CPUATTN_CACHE_DIR` when set, otherwise the
 platform-style `XDG_CACHE_HOME/cpuattn` user cache.
 
+## Diagnostics
+
+`Runtime.explain()` returns a structured, JSON-ready `SelectionDiagnostics`
+record of the last selection: the host fingerprint, the backend/ISA decision
+(every candidate and why it was accepted or rejected), the legal plan space by
+axis, the tuner identity and every measurement, the winner, the workspace and
+packing layout, and the compile-cache counters. It is assembled on demand from
+data the runtime already holds, so it adds no steady-state cost.
+
+```python
+record = runtime.explain()
+print(record.winner["label"], record.workspace["summary"])
+payload = record.as_json()
+```
+
+The same record is rendered to stderr under `CPUATTN_DEBUG=1`, and every
+benchmark case embeds it in the JSON report. The runtime holds no reference
+implementation, so the record's `numeric` section is empty there; a test or
+benchmark attaches its comparison with `SelectionDiagnostics.with_numeric`.
+
 ## Current support
 
 - FP32 storage, accumulation, and output;

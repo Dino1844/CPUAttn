@@ -42,6 +42,7 @@ class CaseResult:
     tune_steps: int | None = None
     final_skv: int | None = None
     thread_levels: tuple[ThreadLevel, ...] | None = None
+    diagnostics: dict[str, object] | None = None
     error: str | None = None
 
 

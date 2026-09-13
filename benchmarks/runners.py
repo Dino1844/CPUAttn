@@ -69,6 +69,22 @@ def _winner_native_ns(runtime: Runtime) -> int:
     return selection.winner.latency_ns
 
 
+def _diagnostics(runtime: Runtime, max_abs_err: float | None) -> dict[str, object] | None:
+    """Embed the runtime's structured record, with the harness's numeric check."""
+    record = runtime.explain()
+    if record is None:
+        return None
+    if max_abs_err is not None:
+        record = record.with_numeric(
+            {
+                "max_abs_err": max_abs_err,
+                "tolerance": _NUMERIC_TOLERANCE,
+                "numeric_ok": max_abs_err <= _NUMERIC_TOLERANCE,
+            }
+        )
+    return record.as_json()
+
+
 def _baseline(
     backend: str,
     samples: list[int],
@@ -201,6 +217,7 @@ def _run_prefill(
             baselines=baselines,
             max_abs_err=max_abs_err,
             numeric_ok=max_abs_err <= _NUMERIC_TOLERANCE,
+            diagnostics=_diagnostics(runtime, max_abs_err),
         )
 
 
@@ -267,6 +284,7 @@ def _run_decode_stream(
                 first_call_ms=records[0].wall_ns / 1e6,
                 max_abs_err=max_abs_err,
                 numeric_ok=max_abs_err <= _NUMERIC_TOLERANCE,
+                diagnostics=_diagnostics(runtime, max_abs_err),
                 tune_steps=tune_steps,
                 final_skv=final_skv,
             )
@@ -312,6 +330,7 @@ def _run_decode_stream(
             baselines=baselines,
             max_abs_err=max_abs_err,
             numeric_ok=max_abs_err <= _NUMERIC_TOLERANCE,
+            diagnostics=_diagnostics(runtime, max_abs_err),
             tune_steps=tune_steps,
             final_skv=final_skv,
         )
@@ -448,6 +467,7 @@ def run_linear_case(workload: LinearWorkload, *, warmup: int, runs: int) -> Case
             baselines=(baseline,),
             max_abs_err=max_abs_err,
             numeric_ok=max_abs_err <= _NUMERIC_TOLERANCE,
+            diagnostics=_diagnostics(runtime, max_abs_err),
         )
 
 
@@ -483,6 +503,7 @@ def run_thread_scaling_case(
             params=_attention_params(workload),
             plan=_plan_name(runtime),
             thread_levels=tuple(levels),
+            diagnostics=_diagnostics(runtime, None),
         )
 
 

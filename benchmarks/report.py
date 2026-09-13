@@ -80,6 +80,8 @@ def case_to_json(result: CaseResult) -> dict[str, object]:
         payload["error"] = result.error
         return payload
     payload["plan"] = result.plan
+    if result.diagnostics is not None:
+        payload["diagnostics"] = result.diagnostics
     if result.first_call_ms is not None:
         payload["first_call_ms"] = result.first_call_ms
     if result.wall is not None:

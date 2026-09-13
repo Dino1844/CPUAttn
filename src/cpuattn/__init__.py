@@ -1,6 +1,7 @@
 from .core import expr, rownorm, transition
 from .core.operator import Linear, LinearResult, Parallel
 from .core.tensor import Axis, DType, Layout, TensorArgSpec, TensorSpec
+from .diagnostics import SelectionDiagnostics
 from .errors import UnsupportedError
 from .runtime import Runtime
 from .tuning import (
@@ -21,6 +22,7 @@ __all__ = [
     "Measurement",
     "Parallel",
     "Runtime",
+    "SelectionDiagnostics",
     "SingleCoreEstimate",
     "SingleCoreTuner",
     "TensorArgSpec",
