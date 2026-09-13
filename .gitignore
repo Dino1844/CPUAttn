@@ -11,3 +11,7 @@ dist/
 artifacts/
 results/
 meta-attn.pdf
+
+# Internal tuning research harness (local-only, not part of the public tree).
+benchmarks/tuning/
+tests/benchmarks/test_tuning_study.py

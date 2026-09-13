@@ -49,7 +49,7 @@ class _Work:
 class SingleCoreTuner(Tuner):
     """Predict a small tile shortlist on one physical CPU, then measure it."""
 
-    maxnum: int | None = 3
+    maxnum: int | None = 6
     version = 3
 
     def choose_next(

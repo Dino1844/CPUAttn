@@ -208,7 +208,7 @@ candidate plans, compiler identity, compiled artifacts, and loaded native
 kernels are retained for later calls of the same workload.
 
 `SingleCoreTuner` is available when the target is kernel selection on one
-physical CPU rather than worker-count selection. It predicts a three-plan
+physical CPU rather than worker-count selection. It predicts a six-plan
 shortlist with a compact roofline model, then measures those plans. The model
 uses the SIMD width and FMA support reported by the backend and host, plus the
 tile's padded work, memory traffic, K packing, cache footprint, and register
@@ -216,12 +216,12 @@ pressure. It sorts directly by the estimated cycle count; there are no
 shape-specific rules or secondary candidate-selection policy. Estimates are
 inspectable through `predictions(context)`. Setting `maxnum=None` measures every
 legal plan on the selected CPU and is intended for offline validation of the
-default Top-3 policy.
+default Top-6 policy.
 
 ```python
 from cpuattn import Runtime, SingleCoreTuner
 
-runtime = Runtime(tuner=SingleCoreTuner(maxnum=3))
+runtime = Runtime(tuner=SingleCoreTuner(maxnum=6))
 ```
 
 Artifacts and selections use `CPUATTN_CACHE_DIR` when set, otherwise the
@@ -267,6 +267,16 @@ environment provenance (CPU, versions, git commit, sampling configuration).
 Framework logic is unit-tested in `tests/benchmarks/`; baselines are verified
 against the scalar reference implementation. Absolute numbers are only
 meaningful on a quiet machine — compare medians within one run.
+
+`scripts/regress.sh` turns a run into a regression gate: it records the full
+matrix and compares each case's median against a stored baseline
+(`artifacts/benchmarks/quiet-baseline-<arch>.json`) through
+`python -m benchmarks.regress`, failing when any case is slower by more than
+`CPUATTN_REGRESS_TOLERANCE` (default 1.25x) or missing from the candidate. It
+also propagates the run's own exit status, so a crashed or numerically failed
+case fails the gate too. Record the baseline once on a quiet machine; the
+comparison is only meaningful on the same machine, and the report names any
+environment key that differs.
 
 ## Reproducible environment
 

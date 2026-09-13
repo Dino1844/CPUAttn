@@ -126,6 +126,12 @@ static inline void cpuattn_pv_tile(
             for (int m = 0; m < m_valid; ++m)
                 total[m] = cpuattn_simd_load(output + (int64_t)m * dv_size + dv);
             for (int n = 0; n < n_valid; ++n) {
+                /* V is walked column-strided (dv_size between keys), so the
+                   hardware prefetcher rarely sees the next line in time. The
+                   hint is non-semantic: it changes no result. */
+                if (n + 4 < n_valid)
+                    __builtin_prefetch(
+                        v + (int64_t)(n + 4) * dv_size + dv, 0, 3);
                 cpuattn_simd_t values = cpuattn_simd_load(v + (int64_t)n * dv_size + dv);
                 for (int m = 0; m < m_valid; ++m)
                     total[m] = cpuattn_simd_fma(

@@ -324,7 +324,7 @@ def test4() -> None:
         context,
         lambda plan: default_calls.append(plan) or 1,
     )
-    assert len(default_calls) == 10
+    assert len(default_calls) == 16
 
     exhaustive: list[ExecutionPlan] = []
     SingleCoreTuner(maxnum=None, repeat=1).select(
