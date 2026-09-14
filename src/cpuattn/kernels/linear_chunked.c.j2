@@ -25,9 +25,7 @@ static int cpuattn_run(
     const int *cpu_ids, int workers) {
     if (!q || !k || !v || !state || !output || !raw_workspace || !cpu_ids || workers <= 0)
         return -1;
-    size_t scratch_floats = 2u * LINEAR_BLOCK * D
-        + 2u * LINEAR_BLOCK * DV + LINEAR_BLOCK * LINEAR_BLOCK
-        + 3u * LINEAR_BLOCK;
+    size_t scratch_floats = {{ scratch_expression }};
     size_t scratch_stride = cpuattn_align_size(
         scratch_floats * sizeof(float), cpuattn_page_size());
     if (workspace_bytes < (size_t)workers * scratch_stride) return -2;
@@ -62,51 +60,8 @@ static int cpuattn_run(
             int64_t state_base = (b * H + h) * D * DV;
             for (int64_t sb = 0; sb < S; sb += LINEAR_BLOCK) {
                 int valid = (int)(S - sb < LINEAR_BLOCK ? S - sb : LINEAR_BLOCK);
-                for (int m = 0; m < valid; ++m) {
-                    int64_t s = sb + m;
-                    int64_t q_base = ((b * G + g) * S + s) * D;
-                    int64_t v_base = ((b * H + h) * S + s) * DV;
-                    int64_t d = 0;
-                    for (; d + CPUATTN_SIMD_LANES <= D; d += CPUATTN_SIMD_LANES) {
-                        cpuattn_simd_t x_v = cpuattn_simd_load(q + q_base + d);
-                        cpuattn_simd_store(q_block + (int64_t)m * D + d, {{ q_mod_simd }});
-                        x_v = cpuattn_simd_load(k + q_base + d);
-                        cpuattn_simd_store(k_block + (int64_t)m * D + d, {{ k_mod_simd }});
-                    }
-                    for (; d < D; ++d) {
-                        float x = q[q_base + d];
-                        q_block[(int64_t)m * D + d] = {{ q_mod }};
-                        x = k[q_base + d];
-                        k_block[(int64_t)m * D + d] = {{ k_mod }};
-                    }
-                    int64_t dv = 0;
-                    for (; dv + CPUATTN_SIMD_LANES <= DV; dv += CPUATTN_SIMD_LANES) {
-                        cpuattn_simd_t x_v = cpuattn_simd_load(v + v_base + dv);
-                        cpuattn_simd_store(v_block + (int64_t)m * DV + dv, {{ v_mod_simd }});
-                    }
-                    for (; dv < DV; ++dv) {
-                        float x = v[v_base + dv];
-                        v_block[(int64_t)m * DV + dv] = {{ v_mod }};
-                    }
-                    decay[m] = {{ scale_expr }};
-                }
-
-                float running = 1.0f;
-                for (int m = 0; m < valid; ++m) {
-{% if read_before %}
-                    prefix[m] = running;
-                    running *= decay[m];
-{% else %}
-                    running *= decay[m];
-                    prefix[m] = running;
-{% endif %}
-                }
-                float block_scale = running;
-                running = 1.0f;
-                for (int j = valid - 1; j >= 0; --j) {
-                    suffix[j] = running;
-                    running *= decay[j];
-                }
+{% include "common/linear_block_load.c.j2" %}
+{% include "common/linear_block_decay.c.j2" %}
 
                 cpuattn_linear_readout_block(
                     q_block, state + state_base, o_block,
@@ -130,23 +85,7 @@ static int cpuattn_run(
                 cpuattn_linear_values_block(
                     scores, v_block, o_block, DV, valid);
 
-                for (int m = 0; m < valid; ++m) {
-                    int64_t s = sb + m;
-                    cpuattn_copy(
-                        output + ((b * H + h) * S + s) * DV,
-                        o_block + (int64_t)m * DV,
-                        DV);
-                }
-
-                cpuattn_state_update_block(
-                    state + state_base,
-                    v_block,
-                    k_block,
-                    suffix,
-                    D,
-                    DV,
-                    valid,
-                    block_scale);
+{% include "common/linear_block_finish.c.j2" %}
             }
         }
         if (pinned)

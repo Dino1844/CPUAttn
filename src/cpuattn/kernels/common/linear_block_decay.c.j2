@@ -1,0 +1,16 @@
+                float running = 1.0f;
+                for (int m = 0; m < valid; ++m) {
+{% if read_before %}
+                    prefix[m] = running;
+                    running *= decay[m];
+{% else %}
+                    running *= decay[m];
+                    prefix[m] = running;
+{% endif %}
+                }
+                float block_scale = running;
+                running = 1.0f;
+                for (int j = valid - 1; j >= 0; --j) {
+                    suffix[j] = running;
+                    running *= decay[j];
+                }

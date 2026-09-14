@@ -1,0 +1,28 @@
+                for (int m = 0; m < valid; ++m) {
+                    int64_t s = sb + m;
+                    cpuattn_copy(
+                        output + ((b * H + h) * S + s) * DV,
+                        o_block + (int64_t)m * DV,
+                        DV);
+                }
+{% if beta_scale %}
+                for (int m = 0; m < valid; ++m) {
+                    int64_t dv = 0;
+                    for (; dv + CPUATTN_SIMD_LANES <= DV; dv += CPUATTN_SIMD_LANES)
+                        cpuattn_simd_store(
+                            w_block + (int64_t)m * DV + dv,
+                            cpuattn_simd_mul(
+                                cpuattn_simd_load(w_block + (int64_t)m * DV + dv),
+                                cpuattn_simd_set1(beta[m])));
+                    for (; dv < DV; ++dv) w_block[(int64_t)m * DV + dv] *= beta[m];
+                }
+{% endif %}
+                cpuattn_state_update_block(
+                    state + state_base,
+                    {{ state_values }},
+                    k_block,
+                    suffix,
+                    D,
+                    DV,
+                    valid,
+                    block_scale);

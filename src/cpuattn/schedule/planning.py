@@ -19,6 +19,54 @@ from .plan import (
 from ..core.validate import LinearCall, ParallelCall, ValidatedCall
 
 
+_SCRATCH_SYMBOLS = {"D": "D", "DV": "DV"}
+
+
+def _linear_scratch_terms(code: CodePlan) -> tuple[tuple[int, str], ...]:
+    """Per-worker linear scratch as (coefficient, symbol) terms.
+
+    Single source for both the workspace the planner sizes and the stride the
+    generated kernel walks. The block size is a compile-time constant, so it is
+    folded into the coefficients and only ``D``/``DV`` stay symbolic; ``"1"``
+    marks a constant term.
+    """
+    if code.lowering is LoweringKind.LINEAR_SCAN:
+        return ((5, "D"), (2, "DV"))
+    block = code.tile.q
+    if code.lowering is LoweringKind.LINEAR_CHUNKED:
+        return (
+            (2 * block, "D"),
+            (2 * block, "DV"),
+            (block * block + 3 * block, "1"),
+        )
+    if code.lowering is LoweringKind.LINEAR_DELTA:
+        return (
+            (2 * block, "D"),
+            (3 * block, "DV"),
+            (block * block + 5 * block, "1"),
+        )
+    return ((2, "D"), (2, "DV"))
+
+
+def linear_scratch_expression(code: CodePlan) -> str:
+    """C expression for the per-worker linear scratch, over D/DV."""
+    return " + ".join(
+        str(coefficient)
+        if symbol == "1"
+        else f"{coefficient} * {_SCRATCH_SYMBOLS[symbol]}"
+        for coefficient, symbol in _linear_scratch_terms(code)
+    )
+
+
+def linear_scratch_floats(code: CodePlan, d_size: int, dv_size: int) -> int:
+    """Concrete per-worker linear scratch size for planning."""
+    values = {"D": d_size, "DV": dv_size, "1": 1}
+    return sum(
+        coefficient * values[symbol]
+        for coefficient, symbol in _linear_scratch_terms(code)
+    )
+
+
 class PlanBuilder:
     def __init__(self, host: Host, *, page_size: int | None = None) -> None:
         self.host = host
@@ -202,14 +250,7 @@ class PlanBuilder:
             assert isinstance(operator, Linear) and isinstance(call, LinearCall)
             d = call.q.shape[3]
             dv = call.v.shape[3]
-            if code.lowering is LoweringKind.LINEAR_CHUNKED:
-                block = code.tile.q
-                floats = 2 * block * d + 2 * block * dv + block * block + 3 * block
-            elif code.lowering is LoweringKind.LINEAR_DELTA:
-                block = code.tile.q
-                floats = 2 * block * d + 3 * block * dv + block * block + 5 * block
-            else:
-                floats = 2 * d + 2 * dv
+            floats = linear_scratch_floats(code, d, dv)
             worker_stride = _align(floats * 4, private_alignment)
             size = launch.workers * worker_stride
             regions = [

@@ -451,3 +451,117 @@ def test13(tmp_path: Path, native) -> None:
         np.testing.assert_allclose(
             actual.state, expected.state, rtol=2e-4, atol=2e-5, err_msg=plan.identity
         )
+
+
+def test14(tmp_path: Path, native) -> None:
+    """Planner scratch and kernel stride agree past a page boundary (d=dv=256)."""
+    host, backend = native
+    rng = np.random.default_rng(77)
+    d = dv = 256
+    compiler = Compiler(tmp_path)
+
+    standard = Linear(
+        transition=transition.program(
+            transition.scale(0.95), transition.outer(expr.var("k"), expr.var("v"))
+        ),
+        readout=transition.readout(timing=transition.ReadTiming.AFTER),
+    )
+    call = validate_linear_call(
+        standard,
+        q=rng.normal(size=(1, 2, 3, d)).astype(np.float32),
+        k=rng.normal(size=(1, 2, 3, d)).astype(np.float32),
+        v=rng.normal(size=(1, 2, 3, dv)).astype(np.float32),
+    )
+    expected = reference_linear(standard, call)
+    for plan in _plans(standard, call, host, backend):
+        actual = _execute(compiler, standard, call, plan, backend)
+        np.testing.assert_allclose(
+            actual.output, expected.output, rtol=1e-3, atol=1e-4, err_msg=plan.identity
+        )
+
+    delta = Linear(
+        transition=transition.program(
+            transition.scale(expr.argument("gate")),
+            transition.rank1(-expr.argument("beta") * expr.var("k"), expr.var("k")),
+            transition.outer(expr.var("k"), expr.argument("beta") * expr.var("v")),
+        ),
+        readout=transition.readout(timing=transition.ReadTiming.AFTER),
+        arguments=(
+            TensorArgSpec("gate", (Axis.BATCH, Axis.SEQUENCE)),
+            TensorArgSpec("beta", (Axis.BATCH, Axis.SEQUENCE)),
+        ),
+    )
+    delta_call = validate_linear_call(
+        delta,
+        q=rng.normal(size=(1, 2, 3, d)).astype(np.float32),
+        k=rng.normal(size=(1, 2, 3, d)).astype(np.float32),
+        v=rng.normal(size=(1, 2, 3, dv)).astype(np.float32),
+        arguments={
+            "gate": rng.uniform(0.9, 1.0, size=(1, 3)).astype(np.float32),
+            "beta": rng.uniform(0.05, 0.95, size=(1, 3)).astype(np.float32),
+        },
+    )
+    delta_expected = reference_linear(delta, delta_call)
+    for plan in _plans(delta, delta_call, host, backend):
+        actual = _execute(compiler, delta, delta_call, plan, backend)
+        np.testing.assert_allclose(
+            actual.output,
+            delta_expected.output,
+            rtol=1e-3,
+            atol=1e-4,
+            err_msg=plan.identity,
+        )
+
+
+def test15(native) -> None:
+    """Planner scratch, C expression, and explicit formulas agree."""
+    from cpuattn.schedule.planning import (
+        linear_scratch_expression,
+        linear_scratch_floats,
+    )
+
+    host, backend = native
+
+    def expected_floats(code, d, dv):
+        if code.lowering is LoweringKind.LINEAR_SCAN:
+            return 5 * d + 2 * dv
+        if code.lowering is LoweringKind.LINEAR_CHUNKED:
+            block = code.tile.q
+            return 2 * block * d + 2 * block * dv + block * block + 3 * block
+        if code.lowering is LoweringKind.LINEAR_DELTA:
+            block = code.tile.q
+            return 2 * block * d + 3 * block * dv + block * block + 5 * block
+        return 2 * d + 2 * dv
+
+    standard = Linear(
+        transition=transition.program(
+            transition.scale(0.95), transition.outer(expr.var("k"), expr.var("v"))
+        ),
+        readout=transition.readout(timing=transition.ReadTiming.AFTER),
+    )
+    delta = Linear(
+        transition=transition.program(
+            transition.scale(expr.argument("gate")),
+            transition.rank1(-expr.argument("beta") * expr.var("k"), expr.var("k")),
+            transition.outer(expr.var("k"), expr.argument("beta") * expr.var("v")),
+        ),
+        readout=transition.readout(timing=transition.ReadTiming.AFTER),
+        arguments=(
+            TensorArgSpec("gate", (Axis.BATCH, Axis.SEQUENCE)),
+            TensorArgSpec("beta", (Axis.BATCH, Axis.SEQUENCE)),
+        ),
+    )
+    tensor = np.ones((1, 2, 3, 64), dtype=np.float32)
+    delta_arguments = {
+        "gate": np.ones((1, 3), dtype=np.float32),
+        "beta": np.full((1, 3), 0.5, dtype=np.float32),
+    }
+    for operator, arguments in ((standard, None), (delta, delta_arguments)):
+        call = validate_linear_call(
+            operator, q=tensor, k=tensor, v=tensor, arguments=arguments
+        )
+        d, dv = call.q.shape[3], call.v.shape[3]
+        for code in backend.enumerate_code_plans(operator, call, host):
+            expected = expected_floats(code, d, dv)
+            assert linear_scratch_floats(code, d, dv) == expected, code.identity
+            assert eval(linear_scratch_expression(code), {"D": d, "DV": dv}) == expected

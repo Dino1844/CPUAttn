@@ -11,6 +11,7 @@ from ...core.operator import Linear
 from ...core.tensor import Axis, TensorArgSpec
 from ...errors import UnsupportedError
 from ...schedule.plan import CodePlan, LoweringKind
+from ...schedule.planning import linear_scratch_expression
 from ..lowering import (
     DeltaBlockPlan,
     LinearBlockPlan,
@@ -67,6 +68,7 @@ def render_linear(
         v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
         body_code=_scan_body(operator, specs),
         all_identity=_all_identity(operator),
+        scratch_expression=linear_scratch_expression(code),
     )
 
 
@@ -102,6 +104,10 @@ def _render_chunked(
             else "1.0f"
         ),
         read_before=operator.readout.timing is transition.ReadTiming.BEFORE,
+        has_beta=False,
+        beta_scale=False,
+        state_values="v_block",
+        scratch_expression=linear_scratch_expression(code),
     )
 
 
@@ -137,6 +143,11 @@ def _render_delta(
             else "1.0f"
         ),
         beta_expr=emit_expr(plan.beta, factor_context),
+        read_before=False,
+        has_beta=True,
+        beta_scale=True,
+        state_values="w_block",
+        scratch_expression=linear_scratch_expression(code),
     )
 
 
@@ -169,6 +180,7 @@ def _render_2d(
         readout_code=_readout_code(operator, specs, _DV_BLOCK),
         read_before=operator.readout.timing is transition.ReadTiming.BEFORE,
         all_identity=_all_identity(operator),
+        scratch_expression=linear_scratch_expression(code),
     )
 
 

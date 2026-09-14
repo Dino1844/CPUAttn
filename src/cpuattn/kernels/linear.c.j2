@@ -24,8 +24,9 @@ static int cpuattn_run(
     void *restrict raw_workspace, size_t workspace_bytes,
     const int *cpu_ids, int workers) {
     if (!q || !k || !v || !state || !output || !raw_workspace || !cpu_ids || workers <= 0) return -1;
+    size_t scratch_floats = {{ scratch_expression }};
     size_t scratch_stride = cpuattn_align_size(
-        (size_t)(5 * D + 2 * DV) * sizeof(float), cpuattn_page_size());
+        scratch_floats * sizeof(float), cpuattn_page_size());
     if (workspace_bytes < (size_t)workers * scratch_stride) return -2;
     int affinity_error = 0;
     int64_t rows = B * H;
