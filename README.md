@@ -292,15 +292,20 @@ Framework logic is unit-tested in `tests/benchmarks/`; baselines are verified
 against the scalar reference implementation. Absolute numbers are only
 meaningful on a quiet machine — compare medians within one run.
 
-`scripts/regress.sh` turns a run into a regression gate: it records the full
-matrix and compares each case's median against a stored baseline
+`scripts/regress.sh` turns a run into a regression gate. It records the full
+matrix (twice by default, merged per case by its minimum) and compares each
+case's minimum against a stored baseline
 (`artifacts/benchmarks/quiet-baseline-<arch>.json`) through
 `python -m benchmarks.regress`, failing when any case is slower by more than
-`CPUATTN_REGRESS_TOLERANCE` (default 1.25x) or missing from the candidate. It
-also propagates the run's own exit status, so a crashed or numerically failed
-case fails the gate too. Record the baseline once on a quiet machine; the
+`--tolerance` (default 1.25x) or missing from the candidate. The minimum is the
+stable cross-run signal on a shared machine: a contention spike during tuning
+can inflate a case's median by orders of magnitude while its minimum stays
+clean. It also propagates the run's own exit status, so a crashed or numerically
+failed case fails the gate too. Record the baseline on a quiet machine; the
 comparison is only meaningful on the same machine, and the report names any
-environment key that differs.
+environment key that differs. Run `scripts/regress.sh --help` for the options
+(`--baseline`, `--output`, `--tolerance`, `--runs`, `--stat`, `--metric`,
+`--cache-dir`, `--python`).
 
 ## Reproducible environment
 
