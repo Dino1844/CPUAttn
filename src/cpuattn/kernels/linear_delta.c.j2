@@ -84,9 +84,9 @@ static int cpuattn_run(
                 for (int m = 0; m < valid; ++m) {
                     for (int j = 0; j < LINEAR_BLOCK; ++j)
                         scores[(int64_t)m * LINEAR_BLOCK + j] = 0.0f;
-                    for (int j = 0; j < m; ++j) {
-                        float between = 1.0f;
-                        for (int r = j + 1; r <= m; ++r) between *= decay[r];
+                    float between = 1.0f;
+                    for (int j = m - 1; j >= 0; --j) {
+                        between *= decay[j + 1];
                         scores[(int64_t)m * LINEAR_BLOCK + j] = beta[j] * between
                             * cpuattn_dot(
                                 k_block + (int64_t)m * D,
@@ -102,9 +102,9 @@ static int cpuattn_run(
                 for (int m = 0; m < valid; ++m) {
                     for (int j = 0; j < LINEAR_BLOCK; ++j)
                         scores[(int64_t)m * LINEAR_BLOCK + j] = 0.0f;
-                    for (int j = 0; j <= m; ++j) {
-                        float between = 1.0f;
-                        for (int r = j + 1; r <= m; ++r) between *= decay[r];
+                    float between = 1.0f;
+                    for (int j = m; j >= 0; --j) {
+                        if (j != m) between *= decay[j + 1];
                         scores[(int64_t)m * LINEAR_BLOCK + j] = beta[j] * between
                             * cpuattn_dot(
                                 q_block + (int64_t)m * D,
