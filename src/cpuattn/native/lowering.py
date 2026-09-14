@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..core import transition
-from ..core.expr import Expr
+from ..core.expr import Expr, ValueType
 from ..core.operator import Linear
 from ..core.tensor import Axis
 
@@ -27,7 +27,8 @@ def delta_block_plan(operator: Linear) -> DeltaBlockPlan | None:
 
     The recurrence must be exactly ``Scale?; state -= beta k (k^T state);
     state += beta k (v)`` with a per-token beta that scales both the rank-1
-    correction and the value term.
+    correction and the value term. Equivalent commuted/negated spellings are
+    normalized by ``_coefficient_of``; anything else falls back to the scan.
     """
     steps = operator.transition.steps
     scale: transition.Scale | None = None
@@ -68,14 +69,28 @@ def delta_block_plan(operator: Linear) -> DeltaBlockPlan | None:
 
 
 def _coefficient_of(expression: Expr, name: str) -> Expr | None:
-    """Return ``c`` for ``c * var(name)`` (either operand order), else None."""
-    if expression.kind != "mul" or len(expression.args) != 2:
-        return None
-    first, second = expression.args
-    if _is_variable(second, name):
-        return first
-    if _is_variable(first, name):
-        return second
+    """Return ``c`` for ``expression == c * var(name)``.
+
+    Commuted multiplication and a negated variable or product are normalized:
+    ``k*c``, ``c*k``, ``(-c)*k``, ``c*(-k)`` and ``-(c*k)`` all yield the same
+    coefficient, so an algebraically identical definition is not missed. The
+    gated delta rule is recognized through this, never by operator name.
+    """
+    if _is_variable(expression, name):
+        return Expr("const", ValueType.FLOAT, value=1.0)
+    if expression.kind == "neg" and len(expression.args) == 1:
+        inner = _coefficient_of(expression.args[0], name)
+        return None if inner is None else -inner
+    if expression.kind == "mul" and len(expression.args) == 2:
+        first, second = expression.args
+        if _is_variable(second, name):
+            return first
+        if _is_variable(first, name):
+            return second
+        if second.kind == "neg" and _is_variable(second.args[0], name):
+            return -first
+        if first.kind == "neg" and _is_variable(first.args[0], name):
+            return -second
     return None
 
 

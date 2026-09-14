@@ -196,6 +196,8 @@ def _linear_work(plan: ExecutionPlan, shape: Mapping[str, int]) -> _Work:
         else 1
     )
     padded_sequence = _ceil_div(sequence, block) * block
+    # This ranks the shortlist, it does not price it: the delta triangular solve
+    # is charged as ordinary chunk work rather than modelled on its own.
     flops = 4 * rows * padded_sequence * state_elements
     if block > 1:
         flops += rows * padded_sequence * block * (d_size + dv_size)

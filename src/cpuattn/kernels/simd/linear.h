@@ -46,6 +46,11 @@ static inline float cpuattn_dot(
     return result;
 }
 
+/* Block reductions shared by the chunked and delta lowerings.
+   LINEAR_BLOCK is defined by the including template; every buffer handed in
+   (row_scale, weights, and the q/k/v/values blocks) must be LINEAR_BLOCK-sized.
+   Rows past `rows` are computed so the accumulator array stays in registers,
+   but are never stored, so a caller may leave the tail rows uninitialised. */
 static inline void cpuattn_linear_readout_block(
     const float *restrict q,
     const float *restrict state,

@@ -119,7 +119,9 @@ def _plan_preference(
             LoweringKind.LINEAR_2D: 2,
         }[code.lowering]
         # The delta block amortizes a triangular solve, so it prefers the
-        # largest block; the plain chunked form prefers a small block.
+        # largest block; the plain chunked form prefers a small block. The
+        # largest-block preference is empirical (on the dev host block 16 beat
+        # 4 and 8 by ~2x for S=256..1024), not derived from the cost model.
         block_key = (
             -code.tile.q
             if code.lowering is LoweringKind.LINEAR_DELTA
