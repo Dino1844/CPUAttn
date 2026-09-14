@@ -47,25 +47,10 @@ def render_linear(
     if code.lowering is LoweringKind.LINEAR_2D:
         return _render_2d(templates, operator, code)
 
-    q_context = {"x": "x", **linear_argument_map(operator.arguments, "d")}
-    v_context = {"x": "x", **linear_argument_map(operator.arguments, "dv")}
-    q_vector_context = {
-        "x": "x_v",
-        **simd_argument_map(operator.arguments, linear_names(), Axis.D),
-    }
-    v_vector_context = {
-        "x": "x_v",
-        **simd_argument_map(operator.arguments, linear_names(), Axis.DV),
-    }
     return templates.get_template("linear.c.j2").render(
         code=code,
         arguments=operator.arguments,
-        q_mod=emit_expr(operator.q_mod, q_context),
-        k_mod=emit_expr(operator.k_mod, q_context),
-        v_mod=emit_expr(operator.v_mod, v_context),
-        q_mod_simd=emit_simd_expr(operator.q_mod, q_vector_context),
-        k_mod_simd=emit_simd_expr(operator.k_mod, q_vector_context),
-        v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
+        **_mod_rendering(operator),
         body_code=_scan_body(operator, specs),
         all_identity=_all_identity(operator),
         scratch_expression=linear_scratch_expression(code),
@@ -78,28 +63,12 @@ def _render_chunked(
     code: CodePlan,
     plan: LinearBlockPlan,
 ) -> str:
-    q_context = {"x": "x", **linear_argument_map(operator.arguments, "d")}
-    v_context = {"x": "x", **linear_argument_map(operator.arguments, "dv")}
-    q_vector_context = {
-        "x": "x_v",
-        **simd_argument_map(operator.arguments, linear_names(), Axis.D),
-    }
-    v_vector_context = {
-        "x": "x_v",
-        **simd_argument_map(operator.arguments, linear_names(), Axis.DV),
-    }
-    factor_context = linear_argument_map(operator.arguments, "d")
     return templates.get_template("linear_chunked.c.j2").render(
         code=code,
         arguments=operator.arguments,
-        q_mod=emit_expr(operator.q_mod, q_context),
-        k_mod=emit_expr(operator.k_mod, q_context),
-        v_mod=emit_expr(operator.v_mod, v_context),
-        q_mod_simd=emit_simd_expr(operator.q_mod, q_vector_context),
-        k_mod_simd=emit_simd_expr(operator.k_mod, q_vector_context),
-        v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
+        **_mod_rendering(operator),
         scale_expr=(
-            emit_expr(plan.scale.factor, factor_context)
+            emit_expr(plan.scale.factor, _argument_context(operator))
             if plan.scale is not None
             else "1.0f"
         ),
@@ -107,6 +76,7 @@ def _render_chunked(
         has_beta=False,
         beta_scale=False,
         state_values="v_block",
+        all_identity=_all_identity(operator),
         scratch_expression=linear_scratch_expression(code),
     )
 
@@ -117,36 +87,21 @@ def _render_delta(
     code: CodePlan,
     plan: DeltaBlockPlan,
 ) -> str:
-    q_context = {"x": "x", **linear_argument_map(operator.arguments, "d")}
-    v_context = {"x": "x", **linear_argument_map(operator.arguments, "dv")}
-    q_vector_context = {
-        "x": "x_v",
-        **simd_argument_map(operator.arguments, linear_names(), Axis.D),
-    }
-    v_vector_context = {
-        "x": "x_v",
-        **simd_argument_map(operator.arguments, linear_names(), Axis.DV),
-    }
-    factor_context = linear_argument_map(operator.arguments, "d")
     return templates.get_template("linear_delta.c.j2").render(
         code=code,
         arguments=operator.arguments,
-        q_mod=emit_expr(operator.q_mod, q_context),
-        k_mod=emit_expr(operator.k_mod, q_context),
-        v_mod=emit_expr(operator.v_mod, v_context),
-        q_mod_simd=emit_simd_expr(operator.q_mod, q_vector_context),
-        k_mod_simd=emit_simd_expr(operator.k_mod, q_vector_context),
-        v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
+        **_mod_rendering(operator),
         scale_expr=(
-            emit_expr(plan.scale.factor, factor_context)
+            emit_expr(plan.scale.factor, _argument_context(operator))
             if plan.scale is not None
             else "1.0f"
         ),
-        beta_expr=emit_expr(plan.beta, factor_context),
+        beta_expr=emit_expr(plan.beta, _argument_context(operator)),
         read_before=False,
         has_beta=True,
         beta_scale=True,
         state_values="w_block",
+        all_identity=_all_identity(operator),
         scratch_expression=linear_scratch_expression(code),
     )
 
@@ -157,25 +112,10 @@ def _render_2d(
     code: CodePlan,
 ) -> str:
     specs = {spec.name: spec for spec in operator.arguments}
-    q_context = {"x": "x", **linear_argument_map(operator.arguments, "d")}
-    v_context = {"x": "x", **linear_argument_map(operator.arguments, "dv")}
-    q_vector_context = {
-        "x": "x_v",
-        **simd_argument_map(operator.arguments, linear_names(), Axis.D),
-    }
-    v_vector_context = {
-        "x": "x_v",
-        **simd_argument_map(operator.arguments, linear_names(), Axis.DV),
-    }
     return templates.get_template("linear_2d.c.j2").render(
         code=code,
         arguments=operator.arguments,
-        q_mod=emit_expr(operator.q_mod, q_context),
-        k_mod=emit_expr(operator.k_mod, q_context),
-        v_mod=emit_expr(operator.v_mod, v_context),
-        q_mod_simd=emit_simd_expr(operator.q_mod, q_vector_context),
-        k_mod_simd=emit_simd_expr(operator.k_mod, q_vector_context),
-        v_mod_simd=emit_simd_expr(operator.v_mod, v_vector_context),
+        **_mod_rendering(operator),
         transition_code=_linear_transition_code(operator, specs, _DV_BLOCK),
         readout_code=_readout_code(operator, specs, _DV_BLOCK),
         read_before=operator.readout.timing is transition.ReadTiming.BEFORE,
@@ -245,6 +185,33 @@ def _all_identity(operator: Linear) -> bool:
         and _is_identity(operator.k_mod)
         and _is_identity(operator.v_mod)
     )
+
+
+def _argument_context(operator: Linear) -> dict[str, str]:
+    """Argument access strings for the d-indexed (per-row) context."""
+    return linear_argument_map(operator.arguments, "d")
+
+
+def _mod_rendering(operator: Linear) -> dict[str, str]:
+    """Rendered scalar and SIMD mod expressions shared by the linear templates."""
+    d_context = {"x": "x", **_argument_context(operator)}
+    dv_context = {"x": "x", **linear_argument_map(operator.arguments, "dv")}
+    d_vector = {
+        "x": "x_v",
+        **simd_argument_map(operator.arguments, linear_names(), Axis.D),
+    }
+    dv_vector = {
+        "x": "x_v",
+        **simd_argument_map(operator.arguments, linear_names(), Axis.DV),
+    }
+    return {
+        "q_mod": emit_expr(operator.q_mod, d_context),
+        "k_mod": emit_expr(operator.k_mod, d_context),
+        "v_mod": emit_expr(operator.v_mod, dv_context),
+        "q_mod_simd": emit_simd_expr(operator.q_mod, d_vector),
+        "k_mod_simd": emit_simd_expr(operator.k_mod, d_vector),
+        "v_mod_simd": emit_simd_expr(operator.v_mod, dv_vector),
+    }
 
 
 def _uses_d_vector(

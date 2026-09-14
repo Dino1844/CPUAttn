@@ -43,14 +43,17 @@ static int cpuattn_run(
         }
         float *scratch = (float *)((unsigned char *)raw_workspace
             + (size_t)omp_get_thread_num() * scratch_stride);
-        float *q_block = scratch;
-        float *k_block = q_block + LINEAR_BLOCK * D;
-        float *v_block = k_block + LINEAR_BLOCK * D;
-        float *o_block = v_block + LINEAR_BLOCK * DV;
+        float *q_scratch = scratch;
+        float *k_scratch = q_scratch + LINEAR_BLOCK * D;
+        float *v_scratch = k_scratch + LINEAR_BLOCK * D;
+        float *o_block = v_scratch + LINEAR_BLOCK * DV;
         float *scores = o_block + LINEAR_BLOCK * DV;
         float *decay = scores + LINEAR_BLOCK * LINEAR_BLOCK;
         float *prefix = decay + LINEAR_BLOCK;
         float *suffix = prefix + LINEAR_BLOCK;
+        const float *q_block;
+        const float *k_block;
+        const float *v_block;
 
         #pragma omp for schedule(static) nowait
         for (int64_t row = 0; row < rows; ++row) {

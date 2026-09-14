@@ -1,3 +1,16 @@
+{% if all_identity %}
+                /* Identity mods: alias the inputs instead of copying a block. */
+                q_block = q + ((b * G + g) * S + sb) * D;
+                k_block = k + ((b * G + g) * S + sb) * D;
+                v_block = v + ((b * H + h) * S + sb) * DV;
+                for (int m = 0; m < valid; ++m) {
+                    int64_t s = sb + m;
+                    decay[m] = {{ scale_expr }};
+{% if has_beta %}
+                    beta[m] = {{ beta_expr }};
+{% endif %}
+                }
+{% else %}
                 for (int m = 0; m < valid; ++m) {
                     int64_t s = sb + m;
                     int64_t q_base = ((b * G + g) * S + s) * D;
@@ -5,27 +18,31 @@
                     int64_t d = 0;
                     for (; d + CPUATTN_SIMD_LANES <= D; d += CPUATTN_SIMD_LANES) {
                         cpuattn_simd_t x_v = cpuattn_simd_load(q + q_base + d);
-                        cpuattn_simd_store(q_block + (int64_t)m * D + d, {{ q_mod_simd }});
+                        cpuattn_simd_store(q_scratch + (int64_t)m * D + d, {{ q_mod_simd }});
                         x_v = cpuattn_simd_load(k + q_base + d);
-                        cpuattn_simd_store(k_block + (int64_t)m * D + d, {{ k_mod_simd }});
+                        cpuattn_simd_store(k_scratch + (int64_t)m * D + d, {{ k_mod_simd }});
                     }
                     for (; d < D; ++d) {
                         float x = q[q_base + d];
-                        q_block[(int64_t)m * D + d] = {{ q_mod }};
+                        q_scratch[(int64_t)m * D + d] = {{ q_mod }};
                         x = k[q_base + d];
-                        k_block[(int64_t)m * D + d] = {{ k_mod }};
+                        k_scratch[(int64_t)m * D + d] = {{ k_mod }};
                     }
                     int64_t dv = 0;
                     for (; dv + CPUATTN_SIMD_LANES <= DV; dv += CPUATTN_SIMD_LANES) {
                         cpuattn_simd_t x_v = cpuattn_simd_load(v + v_base + dv);
-                        cpuattn_simd_store(v_block + (int64_t)m * DV + dv, {{ v_mod_simd }});
+                        cpuattn_simd_store(v_scratch + (int64_t)m * DV + dv, {{ v_mod_simd }});
                     }
                     for (; dv < DV; ++dv) {
                         float x = v[v_base + dv];
-                        v_block[(int64_t)m * DV + dv] = {{ v_mod }};
+                        v_scratch[(int64_t)m * DV + dv] = {{ v_mod }};
                     }
                     decay[m] = {{ scale_expr }};
 {% if has_beta %}
                     beta[m] = {{ beta_expr }};
 {% endif %}
                 }
+                q_block = q_scratch;
+                k_block = k_scratch;
+                v_block = v_scratch;
+{% endif %}

@@ -482,13 +482,14 @@ def run_thread_scaling_case(
     with tempfile.TemporaryDirectory(prefix="cpuattn-bench-") as cache_dir:
         runtime = Runtime(cache_dir=cache_dir)
         runtime.run(operator, q=q, k=k, v=v)
-        key = runtime.last_selection.key
         call = validate_parallel_call(operator, q=q, k=k, v=v)
-        # Thread scaling deliberately enumerates plans through the internal
-        # planner so every worker count can be forced and priced.
-        plans = runtime._plans(
-            operator, runtime._tune_call(operator, call)
-        ).plans
+        # Thread scaling deliberately enumerates every legal plan so each worker
+        # count can be forced and priced.
+        plans = runtime.planner.build_all(
+            runtime.backend.enumerate_code_plans(operator, call, runtime.host),
+            operator,
+            call,
+        )
         levels: list[ThreadLevel] = []
         for workers in workload.workers:
             candidates = [plan for plan in plans if plan.launch.workers == workers]
@@ -496,7 +497,7 @@ def run_thread_scaling_case(
                 continue
             levels.append(
                 _best_plan_level(
-                    runtime, operator, call, key, workers, candidates, warmup, runs
+                    runtime, operator, call, workers, candidates, warmup, runs
                 )
             )
         return CaseResult(
@@ -513,7 +514,6 @@ def _best_plan_level(
     runtime: Runtime,
     operator: Parallel,
     call: ValidatedCall,
-    key: str,
     workers: int,
     candidates: list[ExecutionPlan],
     warmup: int,
@@ -524,8 +524,12 @@ def _best_plan_level(
     for plan in candidates:
         code = plan.code
         label = f"{code.lowering.value}/{code.packing.value}"
+        kernel = runtime.compiler.load(
+            runtime.compiler.compile(operator, call, code, runtime.backend)
+        )
+        runtime.executor.prepare_launch(kernel, plan.launch)
         walls, natives = collect_with_probe(
-            functools.partial(runtime._run_cached, operator, call, key, plan),
+            functools.partial(runtime.executor.run, kernel, plan, call),
             lambda timed: timed.latency_ns,
             warmup=warmup,
             runs=runs,
