@@ -6,11 +6,16 @@
 
 Exits non-zero when any baseline case is slower than the baseline by more than
 the tolerance, or is missing/unavailable in the candidate (a crashed workload
-carries an ``error`` and no median, so treating it as "absent" is what makes the
-gate fail closed). Latency is a distribution, so this is a coarse regression
-gate, not a precise performance assertion: compare reports from the same machine
-and, ideally, the same quiet window. Environment differences are reported but
-not fatal.
+carries an ``error`` and no per-case stat, so treating it as "absent" is what
+makes the gate fail closed).
+
+The default statistic is each case's per-run minimum (``--stat min``). On a
+shared machine a contention spike during tuning can cache a pathological plan
+and inflate a case's median by orders of magnitude while its minimum stays
+clean, so the minimum is the more stable cross-run signal. ``--stat median``
+restores the old behaviour; latency is still a distribution, so this is a coarse
+gate, best compared on the same machine in the same quiet window. Environment
+differences are reported but not fatal.
 """
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-_MEDIAN = "median_ms"
+_STATS = {"min": "min_ms", "median": "median_ms"}
 _ENVIRONMENT_KEYS = (
     "cpu",
     "architecture",
@@ -53,14 +58,16 @@ class Delta:
         return self.candidate_ms / self.baseline_ms
 
 
-def _median(value: object) -> float | None:
+def _number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
     return number if math.isfinite(number) else None
 
 
-def load_report(path: str | Path) -> tuple[Report, dict[str, object]]:
+def load_report(
+    path: str | Path, stat: str = "min_ms"
+) -> tuple[Report, dict[str, object]]:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
@@ -78,7 +85,7 @@ def load_report(path: str | Path) -> tuple[Report, dict[str, object]]:
         for source in ("native", "wall"):
             stats = case.get(source)
             if isinstance(stats, dict):
-                value = _median(stats.get(_MEDIAN))
+                value = _number(stats.get(stat))
                 if value is not None:
                     metrics[source] = value
         report[name] = metrics
@@ -87,7 +94,7 @@ def load_report(path: str | Path) -> tuple[Report, dict[str, object]]:
 
 
 def compare(baseline: Report, candidate: Report, metric: str) -> tuple[Delta, ...]:
-    """Comparable cases: both medians present and the baseline is positive."""
+    """Comparable cases: both stats present and the baseline is positive."""
     deltas = []
     for name, base in baseline.items():
         base_ms = base.get(metric)
@@ -98,8 +105,20 @@ def compare(baseline: Report, candidate: Report, metric: str) -> tuple[Delta, ..
     return tuple(deltas)
 
 
+def merge_reports(reports: list[Report]) -> Report:
+    """Per-case, per-source minimum across runs (min-of-mins)."""
+    merged: Report = {}
+    for report in reports:
+        for name, metrics in report.items():
+            target = merged.setdefault(name, {})
+            for source, value in metrics.items():
+                if source not in target or value < target[source]:
+                    target[source] = value
+    return merged
+
+
 def unavailable(baseline: Report, candidate: Report, metric: str) -> tuple[str, ...]:
-    """Baseline cases that produced no comparable median in the candidate."""
+    """Baseline cases that produced no comparable stat in the candidate."""
     names = []
     for name, base in baseline.items():
         base_ms = base.get(metric)
@@ -136,15 +155,25 @@ def _status(delta: Delta, tolerance: float) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Benchmark regression gate")
     parser.add_argument("--baseline", type=Path, required=True)
-    parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument(
+        "--candidate",
+        type=Path,
+        action="append",
+        required=True,
+        help="candidate report; repeat to merge runs per-case by minimum",
+    )
     parser.add_argument("--metric", choices=("native", "wall"), default="native")
+    parser.add_argument("--stat", choices=tuple(_STATS), default="min")
     parser.add_argument("--tolerance", type=float, default=1.25)
     arguments = parser.parse_args(argv)
     if arguments.tolerance < 1.0:
         parser.error("--tolerance must be >= 1.0")
 
-    baseline, base_env = load_report(arguments.baseline)
-    candidate, cand_env = load_report(arguments.candidate)
+    stat = _STATS[arguments.stat]
+    baseline, base_env = load_report(arguments.baseline, stat)
+    candidates = [load_report(path, stat) for path in arguments.candidate]
+    candidate = merge_reports([report for report, _ in candidates])
+    cand_env = candidates[-1][1]
     differences = environment_differences(base_env, cand_env)
     if differences:
         print(f"warning: environment differs on {', '.join(differences)}")
@@ -166,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"{len(bad)} regression(s) over {arguments.tolerance:.2f}x, "
         f"{len(missing)} unavailable, across {len(deltas)} comparable cases "
-        f"(metric={arguments.metric})"
+        f"(metric={arguments.metric}, stat={arguments.stat})"
     )
     return 1 if bad or missing else 0
 

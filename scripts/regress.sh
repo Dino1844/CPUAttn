@@ -20,14 +20,18 @@ if [[ ! -f "${baseline}" ]]; then
 fi
 
 # Remove any stale report so a hard-crashed run cannot be gated against old data.
-rm -f "${candidate}"
+candidate_second="${candidate%.json}-2.json"
+rm -f "${candidate}" "${candidate_second}"
 
 benchmark_status=0
 "${python_bin}" -m benchmarks.run --suite full --no-torch --output "${candidate}" || benchmark_status=$?
+"${python_bin}" -m benchmarks.run --suite full --no-torch --output "${candidate_second}" || benchmark_status=$?
 
 regress_status=0
 "${python_bin}" -m benchmarks.regress \
-    --baseline "${baseline}" --candidate "${candidate}" --tolerance "${tolerance}" || regress_status=$?
+    --baseline "${baseline}" \
+    --candidate "${candidate}" --candidate "${candidate_second}" \
+    --tolerance "${tolerance}" || regress_status=$?
 
 if [[ "${benchmark_status}" -ne 0 || "${regress_status}" -ne 0 ]]; then
     echo "regression gate failed (benchmark=${benchmark_status}, gate=${regress_status})" >&2

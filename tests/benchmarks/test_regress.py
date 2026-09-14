@@ -28,10 +28,10 @@ def test_load_compare_and_gate(tmp_path: Path) -> None:
         tmp_path,
         "base.json",
         [
-            {"name": "a", "native": {"median_ms": 1.0}, "wall": {"median_ms": 2.0}},
-            {"name": "b", "native": {"median_ms": 4.0}},
-            {"name": "c"},  # no median: present but not comparable
-            {"name": "d", "native": {"median_ms": 0.0}},  # zero baseline
+            {"name": "a", "native": {"min_ms": 1.0}, "wall": {"min_ms": 2.0}},
+            {"name": "b", "native": {"min_ms": 4.0}},
+            {"name": "c"},  # no stat: present but not comparable
+            {"name": "d", "native": {"min_ms": 0.0}},  # zero baseline
         ],
         {"cpu": "X", "architecture": "x86_64", "git_commit": "aaa"},
     )
@@ -39,9 +39,9 @@ def test_load_compare_and_gate(tmp_path: Path) -> None:
         tmp_path,
         "cand.json",
         [
-            {"name": "a", "native": {"median_ms": 1.25}},  # exactly the tolerance
-            {"name": "b", "native": {"median_ms": 3.0}},
-            {"name": "d", "native": {"median_ms": 1.0}},
+            {"name": "a", "native": {"min_ms": 1.25}},  # exactly the tolerance
+            {"name": "b", "native": {"min_ms": 3.0}},
+            {"name": "d", "native": {"min_ms": 1.0}},
         ],
         {"cpu": "Y", "architecture": "x86_64", "git_commit": "bbb"},
     )
@@ -65,15 +65,15 @@ def test_main_fails_on_crashed_or_missing_case(
         tmp_path,
         "b.json",
         [
-            {"name": "a", "native": {"median_ms": 1.0}},
-            {"name": "b", "native": {"median_ms": 2.0}},
+            {"name": "a", "native": {"min_ms": 1.0}},
+            {"name": "b", "native": {"min_ms": 2.0}},
         ],
     )
     candidate = _write(
         tmp_path,
         "c.json",
         [
-            {"name": "a", "native": {"median_ms": 1.0}},
+            {"name": "a", "native": {"min_ms": 1.0}},
             {"name": "b", "error": "RuntimeError: boom"},
         ],
     )
@@ -82,7 +82,7 @@ def test_main_fails_on_crashed_or_missing_case(
 
 
 def test_main_passes_on_identity(tmp_path: Path) -> None:
-    cases = [{"name": "a", "native": {"median_ms": 1.0}}]
+    cases = [{"name": "a", "native": {"min_ms": 1.0}}]
     baseline = _write(tmp_path, "b.json", cases)
     candidate = _write(tmp_path, "c.json", cases)
     assert main(["--baseline", str(baseline), "--candidate", str(candidate)]) == 0
@@ -104,12 +104,41 @@ def test_non_finite_and_bool_medians_are_ignored(tmp_path: Path) -> None:
         tmp_path,
         "n.json",
         [
-            {"name": "a", "native": {"median_ms": True}},
-            {"name": "b", "native": {"median_ms": float("nan")}},
-            {"name": "c", "native": {"median_ms": 5.0}},
+            {"name": "a", "native": {"min_ms": True}},
+            {"name": "b", "native": {"min_ms": float("nan")}},
+            {"name": "c", "native": {"min_ms": 5.0}},
         ],
     )
     report, _ = load_report(path)
     assert report["a"] == {}
     assert report["b"] == {}
     assert report["c"] == {"native": 5.0}
+
+
+def test_stat_option_selects_the_compared_statistic(tmp_path: Path) -> None:
+    """The default compares minima; --stat median restores median comparison."""
+    baseline = _write(
+        tmp_path,
+        "b.json",
+        [{"name": "a", "native": {"min_ms": 1.0, "median_ms": 9.0}}],
+    )
+    candidate = _write(
+        tmp_path,
+        "c.json",
+        [{"name": "a", "native": {"min_ms": 1.0, "median_ms": 20.0}}],
+    )
+    # The minimum is unchanged, so the default (min) gate passes.
+    assert main(["--baseline", str(baseline), "--candidate", str(candidate)]) == 0
+    # The median regressed 9 -> 20, which --stat median catches.
+    assert (
+        main(
+            [
+                "--baseline", str(baseline),
+                "--candidate", str(candidate),
+                "--stat", "median",
+            ]
+        )
+        == 1
+    )
+    report, _ = load_report(baseline, "median_ms")
+    assert report["a"] == {"native": 9.0}
