@@ -64,9 +64,13 @@ static inline void cpuattn_linear_readout_block(
         for (int64_t d = 0; d < d_size; ++d) {
             cpuattn_simd_t values = cpuattn_simd_load_partial(
                 state + d * dv_size + dv, width);
-            for (int m = 0; m < LINEAR_BLOCK; ++m)
+            for (int m = 0; m < LINEAR_BLOCK; ++m) {
+                /* Rows past the valid tail are computed but never stored; clamp
+                   the read so an aliased input is never read out of range. */
+                const float *row = q + (int64_t)(m < rows ? m : 0) * d_size;
                 total[m] = cpuattn_simd_fma(
-                    q[(int64_t)m * d_size + d] * row_scale[m], values, total[m]);
+                    row[d] * row_scale[m], values, total[m]);
+            }
         }
         for (int m = 0; m < LINEAR_BLOCK; ++m)
             if (m < rows)
@@ -84,11 +88,13 @@ static inline void cpuattn_linear_values_block(
     for (int64_t dv = 0; dv < dv_size; dv += CPUATTN_SIMD_LANES) {
         int width = (int)(dv_size - dv < CPUATTN_SIMD_LANES
             ? dv_size - dv : CPUATTN_SIMD_LANES);
+        /* A compile-time row bound keeps total[] in registers; the reduction
+           walks only the valid rows so stale weights never enter. */
         cpuattn_simd_t total[LINEAR_BLOCK];
         for (int m = 0; m < LINEAR_BLOCK; ++m)
             total[m] = cpuattn_simd_load_partial(
                 output + (int64_t)m * dv_size + dv, width);
-        for (int j = 0; j < LINEAR_BLOCK; ++j) {
+        for (int j = 0; j < rows; ++j) {
             cpuattn_simd_t value = cpuattn_simd_load_partial(
                 values + (int64_t)j * dv_size + dv, width);
             for (int m = 0; m < LINEAR_BLOCK; ++m)
